@@ -79,6 +79,13 @@ python -m src.training.train --mode pretrain --model-variant nano
 
 This uses `configs/model.yaml` section `nano` (256 hidden, 4 layers, 8 heads) and is suitable for verifying that the training loop, data loading, and model forward pass work correctly without GPU hardware.
 
+### Dependencies
+
+Two requirements files exist:
+
+- **`requirements.txt`**: Full dependencies for GPU training (Fase 3+). Includes `torch`, `lightning`, `flash-attn`. Requires CUDA.
+- **`requirements-vm.txt`**: Minimal dependencies for Fasi 1-2 on CPU-only VM. Excludes GPU libraries. Used by `scripts/vm_setup.sh`.
+
 ---
 
 ## Code Conventions

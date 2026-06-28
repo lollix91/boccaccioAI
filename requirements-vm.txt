@@ -1,0 +1,26 @@
+# BoccaccioAI - VM Requirements (Fasi 1-2)
+# Dipendenze minime per tokenizer + data pipeline su VM senza GPU
+# De Lauretis Tech
+#
+# Queste dipendenze sono sufficienti per:
+#   - Fase 1: Training tokenizer BPE 32K
+#   - Fase 2: Download CulturaX, filtering, pre-tokenizzazione
+#
+# Non includono torch, lightning, flash-attn (necessari solo dalla Fase 3)
+# perche' la VM Hetzner non ha GPU e flash-attn richiede compilazione CUDA.
+
+# Tokenizer
+tokenizers>=0.19.0
+
+# Data pipeline
+datasets>=2.19.0
+datasketch>=1.6.0
+numpy>=1.26.0
+tqdm>=4.66.0
+xxhash>=3.4.0
+pyyaml>=6.0.1
+
+# KenLM (perplexity filtering) - opzionale
+# Su Ubuntu 22.04 puo' richiedere build manuale:
+#   pip install https://github.com/kpu/kenlm/archive/master.zip
+# kenlm>=0.2.0

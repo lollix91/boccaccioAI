@@ -74,7 +74,8 @@ boccaccioAI/
 |       |-- lightning_module.py # Modulo PyTorch Lightning
 |       |-- scheduler.py        # Cosine schedule con warmup
 |       |-- callbacks.py        # Callback di training
-|-- requirements.txt
+|-- requirements.txt            # Dipendenze complete (training GPU)
+|-- requirements-vm.txt         # Dipendenze minime (Fasi 1-2, VM senza GPU)
 |-- README.md
 |-- AGENTS.md
 ```
@@ -87,13 +88,29 @@ boccaccioAI/
 - CUDA 12.x con GPU compatibile (H100 consigliata per il training completo)
 - PyTorch 2.3+
 
-Installazione delle dipendenze:
+Il progetto utilizza due file di dipendenze separati in base all'ambiente di esecuzione:
+
+### `requirements.txt` - Ambiente completo (training GPU)
+
+Include tutte le dipendenze necessarie per il pre-training e fine-tuning del modello su GPU. Richiede una GPU CUDA per l'installazione di `flash-attn`.
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Le dipendenze principali includono: `torch`, `lightning`, `tokenizers`, `flash-attn`, `datasets`, `wandb`, `transformers`, `safetensors`.
+Dipendenze principali: `torch`, `lightning`, `tokenizers`, `flash-attn`, `datasets`, `wandb`, `transformers`, `safetensors`.
+
+### `requirements-vm.txt` - Ambiente VM (Fasi 1-2, solo CPU)
+
+Dipendenze minime per l'esecuzione delle Fasi 1-2 (tokenizer + data pipeline) su VM cloud senza GPU. Esclude `torch`, `lightning`, `flash-attn` e altre librerie GPU-specifiche che non servono per il preprocessing dei dati.
+
+```bash
+pip install -r requirements-vm.txt
+```
+
+Dipendenze: `tokenizers`, `datasets`, `datasketch`, `numpy`, `tqdm`, `xxhash`, `pyyaml`.
+
+Questo file viene utilizzato automaticamente dallo script `scripts/vm_setup.sh` durante il provisioning della VM Hetzner.
 
 ---
 

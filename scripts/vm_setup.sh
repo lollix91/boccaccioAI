@@ -56,22 +56,21 @@ echo ""
 
 # ─── 4. Installazione dipendenze ───────────────────────
 echo "[4/6] Installazione dipendenze Python..."
-pip install -r requirements.txt -q 2>&1 | tail -5
-echo "  Dipendenze installate"
+pip install -r requirements-vm.txt -q 2>&1 | tail -5
+echo "  Dipendenze installate (requirements-vm.txt)"
 echo ""
 
 # ─── 5. Verifica installazione ─────────────────────────
 echo "[5/6] Verifica installazione..."
 python -c "
-import torch
 import yaml
 import numpy
 import tokenizers
 import datasets
 from datasketch import MinHash
-print(f'  torch: {torch.__version__}')
 print(f'  tokenizers: {tokenizers.__version__}')
 print(f'  datasets: {datasets.__version__}')
+print(f'  numpy: {numpy.__version__}')
 print('  Tutti i moduli importati correttamente')
 "
 echo ""
