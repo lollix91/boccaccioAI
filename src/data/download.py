@@ -85,7 +85,6 @@ def download_culturax(
         DATASET_LANG,
         split="train",
         streaming=True,
-        num_proc=num_proc,
     )
 
     total_bytes = 0
