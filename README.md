@@ -53,6 +53,8 @@ boccaccioAI/
 |   |-- 03_pretrain.sh          # Fase 3: pre-training modello 1B
 |   |-- 04_finetune.sh          # Fase 4: instruction fine-tuning
 |   |-- 05_evaluate.sh          # Fase 5: valutazione e test
+|   |-- vm_setup.sh             # Setup VM Hetzner per Fasi 1-2
+|   |-- run_fases_1_2.sh        # Esecuzione Fasi 1-2 su VM Hetzner
 |-- src/
 |   |-- data/
 |   |   |-- download.py         # Download CulturaX italiano
