@@ -34,7 +34,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=22, help="SSH port")
     parser.add_argument("--user", default="root", help="SSH user")
     parser.add_argument("--password", default=None, help="SSH password")
-    parser.add_argument("--repo-url", default="https://github.com/lollex91/boccaccioAI.git",
+    parser.add_argument("--repo-url", default="https://github.com/lollix91/boccaccioAI.git",
                         help="Git repo URL")
     parser.add_argument("--skip-setup", action="store_true", help="Skip setup if already done")
     args = parser.parse_args()

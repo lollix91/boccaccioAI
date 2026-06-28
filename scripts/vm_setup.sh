@@ -47,7 +47,7 @@ if [ -d "boccaccioAI" ]; then
     cd boccaccioAI
     git pull
 else
-    git clone https://github.com/lollex91/boccaccioAI.git
+    git clone https://github.com/lollix91/boccaccioAI.git
     cd boccaccioAI
 fi
 echo "  Repo in: $(pwd)"
