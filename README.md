@@ -49,6 +49,7 @@ boccaccioAI/
 |-- scripts/
 |   |-- 01_train_tokenizer.sh   # Fase 1: addestramento tokenizer
 |   |-- 02_preprocess_data.sh   # Fase 2: pipeline dati (download, filtro, tokenizzazione)
+|   |-- 02_5_smoke_test.sh      # Fase 2.5: smoke test su GPU locale (modello nano)
 |   |-- 03_pretrain.sh          # Fase 3: pre-training modello 1B
 |   |-- 04_finetune.sh          # Fase 4: instruction fine-tuning
 |   |-- 05_evaluate.sh          # Fase 5: valutazione e test
@@ -113,6 +114,16 @@ Scarica CulturaX italiano, filtra e deduplica i documenti, quindi pre-tokenizza 
 ```bash
 bash scripts/02_preprocess_data.sh
 ```
+
+### Fase 2.5 -- Smoke Test su GPU Locale
+
+Verifica che l'intera pipeline di training funzioni correttamente sui dati reali addestrando il modello nano (11M parametri) per 200 step su GPU locale. Questo passo e' gratuito e permette di individuare problemi prima di pagare l'H100.
+
+```bash
+bash scripts/02_5_smoke_test.sh
+```
+
+Requisiti: 1x GPU con almeno 4GB VRAM (RTX 3060 12GB e' sufficiente). Tempo stimato: ~10-15 minuti.
 
 ### Fase 3 -- Pre-training
 

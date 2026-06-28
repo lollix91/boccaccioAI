@@ -11,6 +11,7 @@ De Lauretis Tech -- BoccaccioAI 1B Italian LLM
 ```bash
 bash scripts/01_train_tokenizer.sh
 bash scripts/02_preprocess_data.sh
+bash scripts/02_5_smoke_test.sh
 bash scripts/03_pretrain.sh
 bash scripts/04_finetune.sh
 bash scripts/05_evaluate.sh
@@ -32,6 +33,11 @@ Data pipeline (download, filter, tokenize):
 python -m src.data.download --output-dir data/raw --max-size-gb 30
 python -m src.data.filter --input-dir data/raw --output-dir data/filtered --jaccard-threshold 0.85 --min-doc-length 200 --num-workers 4
 python -m src.data.tokenize_corpus --input-dir data/filtered --output-dir data/tokenized/pretrain --tokenizer-path tokenizer/boccaccio-32k.json --sequence-length 2048 --val-split 0.005
+```
+
+Smoke test on local GPU (nano model, 200 steps, ~10 min):
+```bash
+bash scripts/02_5_smoke_test.sh
 ```
 
 Pre-training:

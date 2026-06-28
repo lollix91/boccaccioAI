@@ -18,7 +18,7 @@ python -m src.data.filter \
     --output-dir data/filtered \
     --jaccard-threshold 0.85 \
     --min-doc-length 200 \
-    --num-workers 4
+    --num-workers 3
 
 # Step 3: Pre-tokenize into binary format
 echo "[3/3] Pre-tokenizing corpus..."
