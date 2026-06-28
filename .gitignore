@@ -6,8 +6,8 @@ dist/
 build/
 .eggs/
 
-# Data (too large for git)
-data/
+# Data (too large for git) - only top-level data/ directory
+/data/
 tokenizer/*.json
 tokenizer/boccaccio-32k-hf/
 
