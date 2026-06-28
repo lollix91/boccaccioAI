@@ -1,0 +1,53 @@
+# BoccaccioAI - Model Architecture Configuration
+# De Lauretis Tech - 1B Italian LLM
+
+model:
+  name: "boccaccio-1b"
+  architecture: "decoder-only"
+
+  # Core dimensions
+  vocab_size: 32000
+  hidden_size: 2048
+  num_layers: 24
+  num_attention_heads: 16
+  num_kv_heads: 4               # GQA ratio 4:1 (16 query heads, 4 KV heads)
+  intermediate_size: 5504       # SwiGLU: ~(8/3) * hidden_size, rounded to multiple of 256
+  max_position_embeddings: 2048
+
+  # Architecture choices
+  activation_function: "swiglu"
+  positional_embedding: "rope"
+  rope_theta: 10000.0
+  norm_type: "rmsnorm"
+  norm_eps: 1.0e-5
+
+  # Regularization
+  attention_dropout: 0.0        # No dropout (standard per LLM pre-training moderni)
+  hidden_dropout: 0.0
+  embedding_dropout: 0.0
+
+  # Initialization
+  initializer_range: 0.02
+
+  # Tied embeddings (input embedding = LM head)
+  tie_word_embeddings: true
+
+# Nano variant for local testing
+nano:
+  vocab_size: 32000
+  hidden_size: 256
+  num_layers: 4
+  num_attention_heads: 8
+  num_kv_heads: 2
+  intermediate_size: 704
+  max_position_embeddings: 512
+  activation_function: "swiglu"
+  positional_embedding: "rope"
+  rope_theta: 10000.0
+  norm_type: "rmsnorm"
+  norm_eps: 1.0e-5
+  attention_dropout: 0.0
+  hidden_dropout: 0.0
+  embedding_dropout: 0.0
+  initializer_range: 0.02
+  tie_word_embeddings: true

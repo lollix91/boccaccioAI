@@ -1,0 +1,105 @@
+# BoccaccioAI - Training Configuration
+# De Lauretis Tech
+
+# ─── Pre-training ───────────────────────────────────────────────
+pretrain:
+  # Data
+  dataset_path: "data/tokenized/pretrain"
+  sequence_length: 2048
+  num_tokens: 5_000_000_000     # 5B tokens target (budget-constrained)
+
+  # Batch size
+  micro_batch_size: 8           # Per-GPU batch size
+  gradient_accumulation_steps: 32
+  # Effective batch: 8 * 32 * 2048 = 524,288 tokens/step
+
+  # Optimizer
+  optimizer: "adamw"
+  learning_rate: 6.0e-4
+  min_learning_rate: 6.0e-5
+  weight_decay: 0.1
+  beta1: 0.9
+  beta2: 0.95
+  eps: 1.0e-8
+
+  # LR Schedule
+  scheduler: "cosine"
+  warmup_steps: 750             # ~8% of total (~9500 steps)
+
+  # Stability
+  gradient_clip_val: 1.0
+  gradient_clip_algorithm: "norm"
+
+  # Precision & Performance
+  precision: "bf16-mixed"
+  compile_model: true           # torch.compile
+  use_flash_attention: true
+
+  # Checkpointing
+  checkpoint_every_n_steps: 2000
+  checkpoint_dir: "checkpoints/pretrain"
+  save_top_k: 3                 # Keep last 3 checkpoints
+
+  # Logging
+  log_every_n_steps: 50
+  val_check_interval: 1000      # Validate every 1000 steps
+  val_split_ratio: 0.005        # 0.5% of data for validation
+
+  # Hardware
+  accelerator: "gpu"
+  devices: 1
+  strategy: "auto"              # Single GPU = no FSDP needed
+  num_workers: 4
+
+# ─── Instruction Fine-Tuning ───────────────────────────────────
+finetune:
+  dataset_path: "data/tokenized/finetune"
+  sequence_length: 2048
+
+  # Batch size (smaller for fine-tuning)
+  micro_batch_size: 4
+  gradient_accumulation_steps: 8
+  # Effective batch: 4 * 8 * 2048 = 65,536 tokens/step
+
+  # Optimizer (lower LR for fine-tuning)
+  optimizer: "adamw"
+  learning_rate: 2.0e-5
+  min_learning_rate: 2.0e-6
+  weight_decay: 0.01
+  beta1: 0.9
+  beta2: 0.95
+  eps: 1.0e-8
+
+  # Schedule
+  scheduler: "cosine"
+  warmup_steps: 50
+  num_epochs: 3
+
+  # LoRA config (optional, set use_lora: true to enable)
+  use_lora: false               # Full fine-tuning by default (1B is small enough)
+  lora_rank: 32
+  lora_alpha: 64
+  lora_dropout: 0.05
+  lora_target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+
+  # Stability
+  gradient_clip_val: 1.0
+
+  # Precision
+  precision: "bf16-mixed"
+  compile_model: true
+  use_flash_attention: true
+
+  # Checkpointing
+  checkpoint_every_n_steps: 500
+  checkpoint_dir: "checkpoints/finetune"
+  save_top_k: 2
+
+  # Logging
+  log_every_n_steps: 10
+
+  # Hardware
+  accelerator: "gpu"
+  devices: 1
+  strategy: "auto"
+  num_workers: 4

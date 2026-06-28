@@ -1,0 +1,31 @@
+# BoccaccioAI - Tokenizer Configuration
+# De Lauretis Tech
+
+tokenizer:
+  algorithm: "bpe"
+  vocab_size: 32000
+
+  # Special tokens
+  special_tokens:
+    pad: "<pad>"
+    bos: "<s>"
+    eos: "</s>"
+    unk: "<unk>"
+
+  # Training corpus
+  training_corpus_size_gb: 5    # 5GB subset of CulturaX for tokenizer training
+  training_corpus_source: "uonlp/CulturaX"
+  training_corpus_lang: "it"
+
+  # BPE parameters
+  min_frequency: 2
+  show_progress: true
+  initial_alphabet_size: 256    # Byte-level BPE fallback
+
+  # Normalization
+  normalizer: "nfkc"           # Unicode NFKC normalization
+  pre_tokenizer: "byte_level"  # Byte-level pre-tokenization (GPT-2 style)
+
+  # Output
+  output_dir: "tokenizer/"
+  output_name: "boccaccio-32k"

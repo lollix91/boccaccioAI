@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Data (too large for git)
+data/
+tokenizer/*.json
+tokenizer/boccaccio-32k-hf/
+
+# Checkpoints
+checkpoints/
+*.ckpt
+*.pt
+
+# Logs
+logs/
+wandb/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Virtual environment
+venv/
+.venv/
+env/
