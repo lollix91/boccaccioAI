@@ -36,3 +36,6 @@ xxhash>=3.4.0
 # Evaluation
 nltk>=3.8.0
 rouge-score>=0.1.2
+
+# VM management
+paramiko>=3.4.0
