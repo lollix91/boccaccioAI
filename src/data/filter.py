@@ -8,16 +8,16 @@ quality-filtering stages to produce a clean dataset:
     - Length, alpha ratio, punctuation, repeated lines
     - Writes surviving docs to data/heuristic/
 
-  Pass 2 - MinHash LSH deduplication (signature-only in RAM):
-    - Reads heuristic-passed docs, builds MinHash signatures
-    - Only signatures (not full docs) are held in RAM
+  Pass 2 - Exact deduplication (xxhash, streaming):
+    - Reads heuristic-passed docs, computes xxhash of normalized text
+    - Only 8-byte hashes held in RAM (~200MB for 10M docs)
     - Writes deduplicated docs to data/filtered/
 
   Pass 3 - Perplexity filtering (optional, requires KenLM model):
     - Streaming, shard per shard
 
 Memory usage: ~500MB per shard during Pass 1,
-              ~10GB for MinHash signatures of ~10M docs during Pass 2.
+              ~200MB for hash set during Pass 2.
 
 De Lauretis Tech
 """
@@ -34,7 +34,6 @@ from multiprocessing import Pool
 from pathlib import Path
 from typing import Any, Iterator
 
-from datasketch import MinHash, MinHashLSH
 from tqdm import tqdm
 
 logging.basicConfig(
@@ -317,49 +316,25 @@ def heuristic_filter_streaming(
 
 
 # ---------------------------------------------------------------------------
-# Stage 2 -- MinHash LSH Deduplication (signature-only in RAM)
+# Stage 2 -- Exact Deduplication (xxhash, streaming)
 # ---------------------------------------------------------------------------
 
 
-def _word_ngrams(text: str, n: int = 5) -> list[str]:
-    """Extract word-level n-grams from *text*."""
-    words = text.split()
-    if len(words) < n:
-        return [" ".join(words)]
-    return [" ".join(words[i : i + n]) for i in range(len(words) - n + 1)]
-
-
-def _build_minhash_bytes(text: str, num_perm: int) -> bytes:
-    """Create a MinHash signature for *text* and return as raw bytes.
-
-    Each MinHash with 128 perms uses ~1KB. For 10M docs = ~10GB.
-    We store only the hashset bytes, not the full MinHash object.
-    """
-    mh = MinHash(num_perm=num_perm)
-    for gram in _word_ngrams(text, n=5):
-        mh.update(gram.encode("utf-8"))
-    return mh.hashset.tobytes()  # raw bytes, ~num_perm * 4 bytes
-
-
-def deduplicate_minhash_streaming(
+def deduplicate_exact_streaming(
     input_dir: str,
     output_dir: str,
-    jaccard_threshold: float,
-    num_perm: int,
 ) -> tuple[int, int]:
-    """Remove near-duplicate documents using MinHash LSH (streaming).
+    """Remove exact-duplicate documents using xxhash (streaming).
 
-    Pass 2a: Read heuristic-passed docs, build MinHash signatures,
-             store signatures + doc references in LSH index.
-    Pass 2b: Iterate again, keep only docs that are NOT duplicates,
-             write them to output_dir.
+    Reads heuristic-passed docs shard-by-shard, computes xxhash of the
+    normalized text, and keeps only the first occurrence of each hash.
 
-    Memory: ~num_perm * 4 bytes per doc for signatures + LSH index overhead.
-    For 10M docs with 128 perms: ~10GB (fits in 16GB RAM).
+    Memory: ~200MB for 10M docs (set of 8-byte hashes).
+    Time: ~10 minutes for 30GB of text on 8 vCPU.
 
     Returns (total_input, total_kept).
     """
-    import numpy as np
+    import xxhash
 
     input_path = Path(input_dir)
     shard_files = sorted(input_path.glob("*.jsonl"))
@@ -368,42 +343,15 @@ def deduplicate_minhash_streaming(
         sys.exit(1)
 
     logger.info(
-        "Stage 2 - MinHash LSH deduplication (streaming, threshold=%.2f, num_perm=%d) ...",
-        jaccard_threshold,
-        num_perm,
+        "Stage 2 - Exact deduplication (xxhash, streaming) on %d shards ...",
+        len(shard_files),
     )
 
-    lsh = MinHashLSH(threshold=jaccard_threshold, num_perm=num_perm)
-
-    # Pass 2a: Build LSH index with all signatures
-    total_docs = 0
-    doc_keys: list[str] = []  # key like "shard_00003:line_00124"
-
-    logger.info("Pass 2a: Building MinHash LSH index ...")
-    for shard in tqdm(shard_files, desc="Building LSH index"):
-        for line_idx, line in enumerate(open(shard, "r", encoding="utf-8")):
-            line = line.strip()
-            if not line:
-                continue
-            doc = json.loads(line)
-            text: str = doc.get("text", "")
-
-            mh = MinHash(num_perm=num_perm)
-            for gram in _word_ngrams(text, n=5):
-                mh.update(gram.encode("utf-8"))
-
-            key = f"{shard.stem}:{line_idx}"
-            lsh.insert(key, mh)
-            doc_keys.append(key)
-            total_docs += 1
-
-    logger.info("LSH index built with %s documents.", f"{total_docs:,}")
-
-    # Pass 2b: Stream through docs again, keep only non-duplicates
-    logger.info("Pass 2b: Filtering duplicates ...")
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
+    seen_hashes: set[int] = set()
+    total_docs = 0
     duplicates = 0
     kept = 0
     shard_out_idx = 0
@@ -422,36 +370,25 @@ def deduplicate_minhash_streaming(
         shard_out_idx += 1
         buffer = []
 
-    # Track which keys we've already seen as duplicates
-    seen_duplicates: set[str] = set()
-
-    for shard in tqdm(shard_files, desc="Dedup filtering"):
-        for line_idx, line in enumerate(open(shard, "r", encoding="utf-8")):
+    for shard in tqdm(shard_files, desc="Exact dedup"):
+        for line in open(shard, "r", encoding="utf-8"):
             line = line.strip()
             if not line:
                 continue
             doc = json.loads(line)
             text: str = doc.get("text", "")
+            total_docs += 1
 
-            mh = MinHash(num_perm=num_perm)
-            for gram in _word_ngrams(text, n=5):
-                mh.update(gram.encode("utf-8"))
+            # Normalize: strip whitespace, lowercase for hash
+            # (catches duplicates with trivial formatting differences)
+            normalized = " ".join(text.split()).lower()
+            doc_hash = xxhash.xxh64(normalized).intdigest()
 
-            key = f"{shard.stem}:{line_idx}"
-            result = lsh.query(mh)
+            if doc_hash in seen_hashes:
+                duplicates += 1
+                continue
 
-            # A doc is a duplicate if the query returns keys other than itself
-            # AND it's not the first occurrence (first one wins)
-            other_keys = [k for k in result if k != key]
-            if other_keys:
-                # This is a near-duplicate of an earlier doc
-                # Check if any of the others were already kept (first occurrence)
-                is_first = all(k in seen_duplicates for k in other_keys)
-                if not is_first:
-                    duplicates += 1
-                    seen_duplicates.add(key)
-                    continue
-
+            seen_hashes.add(doc_hash)
             kept += 1
             buffer.append(doc)
             if len(buffer) >= docs_per_shard:
@@ -460,10 +397,11 @@ def deduplicate_minhash_streaming(
     flush_buffer()
 
     logger.info(
-        "Stage 2 complete: input %s, kept %s, removed %s duplicates",
+        "Stage 2 complete: input %s, kept %s, removed %s duplicates (%.1f%%)",
         f"{total_docs:,}",
         f"{kept:,}",
         f"{duplicates:,}",
+        (duplicates / total_docs * 100) if total_docs else 0,
     )
     return total_docs, kept
 
@@ -600,12 +538,10 @@ def main() -> None:
         num_workers=args.num_workers,
     )
 
-    # ─── Pass 2: MinHash LSH deduplication (streaming) ────
-    dedup_input, dedup_kept = deduplicate_minhash_streaming(
+    # ─── Pass 2: Exact deduplication (xxhash, streaming) ──
+    dedup_input, dedup_kept = deduplicate_exact_streaming(
         input_dir=heuristic_dir,
         output_dir=args.output_dir,
-        jaccard_threshold=args.jaccard_threshold,
-        num_perm=args.num_perm,
     )
 
     # ─── Pass 3: Perplexity filtering (optional) ──────────

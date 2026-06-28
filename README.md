@@ -128,7 +128,15 @@ bash scripts/01_train_tokenizer.sh
 
 ### Fase 2 -- Pipeline Dati
 
-Scarica CulturaX italiano, filtra e deduplica i documenti, quindi pre-tokenizza il corpus in formato binario per il training.
+Scarica CulturaX italiano (30GB), filtra e deduplica i documenti, quindi pre-tokenizza il corpus in formato binario per il training.
+
+La pipeline di filtering e' composta da tre stage streaming (shard per shard) per funzionare su VM con RAM limitata (16GB):
+
+1. **Heuristic filtering** - rimuove documenti troppo corti/lunghi, con basso ratio alfabetico, punteggiatura eccessiva, o linee ripetute. Output: `data/heuristic/`
+2. **Exact deduplication (xxhash)** - rimuove duplicati esatti calcolando xxhash del testo normalizzato. RAM: ~200MB per 10M documenti. Output: `data/filtered/`
+3. **Perplexity filtering** (opzionale) - richiede modello KenLM. Skippato se non fornito.
+
+> **Nota sulla strategia di dedup**: Inizialmente era previsto MinHash LSH per catturare anche i near-duplicate, ma su 9.26M documenti con 128 permutazioni richiedeva ~15 ore e ~10GB di RAM, con rischio OOM su VM 16GB. L'exact dedup via xxhash completa in ~10 minuti con ~200MB di RAM. CulturaX e' gia' pre-deduplicato da HuggingFace, quindi i near-duplicate residui sono trascurabili per un modello da 1B parametri.
 
 ```bash
 bash scripts/02_preprocess_data.sh
