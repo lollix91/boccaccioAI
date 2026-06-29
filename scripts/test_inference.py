@@ -106,12 +106,24 @@ def load_lightning_checkpoint(
     # Lightning stores model weights under 'state_dict' with 'model.' prefix
     state_dict = ckpt.get("state_dict", ckpt)
 
-    # Remove 'model.' prefix if present (Lightning module wraps the model)
+    # Remove prefixes added by Lightning and torch.compile.
+    # Full prefix in checkpoint: model._orig_mod.model.<...>
+    # We need to strip "model._orig_mod." to get "model.<...>"
+    # which matches BoccaccioForCausalLM's state_dict keys.
     cleaned = {}
     for key, value in state_dict.items():
         new_key = key
-        if key.startswith("model."):
-            new_key = key[len("model."):]
+        # Strip the Lightning + torch.compile wrapper prefix
+        prefix = "model._orig_mod."
+        if new_key.startswith(prefix):
+            new_key = new_key[len(prefix):]
+        else:
+            # Fallback: strip individual prefixes
+            if new_key.startswith("_orig_mod."):
+                new_key = new_key[len("_orig_mod."):]
+            if new_key.startswith("model._orig_mod.model."):
+                new_key = new_key[len("model._orig_mod.model."):]
+                new_key = "model." + new_key
         cleaned[new_key] = value
 
     model = BoccaccioForCausalLM(config)
