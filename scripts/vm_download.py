@@ -105,6 +105,8 @@ def main() -> None:
 
     files = [
         (f"{base}/tokenizer/boccaccio-32k.json", f"{out}/tokenizer/boccaccio-32k.json"),
+        (f"{base}/tokenizer/boccaccio-32k-hf/tokenizer.json", f"{out}/tokenizer/boccaccio-32k-hf/tokenizer.json"),
+        (f"{base}/tokenizer/boccaccio-32k-hf/tokenizer_config.json", f"{out}/tokenizer/boccaccio-32k-hf/tokenizer_config.json"),
         (f"{base}/data/tokenized/pretrain/train.bin", f"{out}/data/tokenized/pretrain/train.bin"),
         (f"{base}/data/tokenized/pretrain/val.bin", f"{out}/data/tokenized/pretrain/val.bin"),
         (f"{base}/data/tokenized/pretrain/meta.json", f"{out}/data/tokenized/pretrain/meta.json"),
