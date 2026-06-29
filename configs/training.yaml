@@ -6,7 +6,7 @@ pretrain:
   # Data
   dataset_path: "data/tokenized/pretrain"
   sequence_length: 2048
-  num_tokens: 10_000_000_000    # 10B tokens target (Chinchilla-near-optimal for 700M)
+  num_tokens: 6_700_000_000     # 6.7B tokens available (1 epoch), ~1.5 epochs for 10B target
 
   # Batch size
   micro_batch_size: 16          # Per-GPU batch size (saturates H100 VRAM)

@@ -79,24 +79,20 @@ def main() -> None:
     print("OK")
 
     # ─── Verifica completamento ───────────────────────────
-    stdin, stdout, stderr = ssh.exec_command("cat /opt/boccaccioAI/progress.json 2>/dev/null")
-    progress_raw = stdout.read().decode("utf-8", errors="replace").strip()
+    # Check if train.bin exists (pipeline completed)
+    stdin, stdout, stderr = ssh.exec_command(
+        "ls /opt/boccaccioAI/data/tokenized/pretrain/train.bin 2>/dev/null"
+    )
+    train_bin_check = stdout.read().decode("utf-8", errors="replace").strip()
 
-    if progress_raw:
-        import json
-        try:
-            progress = json.loads(progress_raw)
-            if progress.get("stage") != "completed":
-                print()
-                print("ATTENZIONE: Il pipeline non risulta completato.")
-                print(f"  Stato attuale: {progress.get('stage_name', 'sconosciuto')} ({progress.get('percent', 0)}%)")
-                resp = input("  Continuare comunque con il download? [y/N] ")
-                if resp.lower() != "y":
-                    print("Download annullato.")
-                    ssh.close()
-                    return
-        except json.JSONDecodeError:
-            pass
+    if not train_bin_check:
+        print()
+        print("ATTENZIONE: train.bin non trovato - il pipeline potrebbe non essere completato.")
+        resp = input("  Continuare comunque con il download? [y/N] ")
+        if resp.lower() != "y":
+            print("Download annullato.")
+            ssh.close()
+            return
 
     # ─── Download file ────────────────────────────────────
     print()
@@ -112,7 +108,6 @@ def main() -> None:
         (f"{base}/data/tokenized/pretrain/train.bin", f"{out}/data/tokenized/pretrain/train.bin"),
         (f"{base}/data/tokenized/pretrain/val.bin", f"{out}/data/tokenized/pretrain/val.bin"),
         (f"{base}/data/tokenized/pretrain/meta.json", f"{out}/data/tokenized/pretrain/meta.json"),
-        (f"{base}/progress.json", f"{out}/data/tokenized/progress.json"),
     ]
 
     downloaded_count = 0
