@@ -56,6 +56,10 @@ boccaccioAI/
 |   |-- 05_evaluate.sh          # Fase 5: valutazione e test
 |   |-- vm_setup.sh             # Setup VM Hetzner per Fasi 1-2
 |   |-- run_fases_1_2.sh        # Esecuzione Fasi 1-2 su VM Hetzner
+|   |-- lightning_setup.py      # Setup Studio Lightning.ai + avvio training
+|   |-- lightning_monitor.py    # Monitoraggio training su Lightning.ai
+|   |-- lightning_download.py   # Download checkpoint da Lightning.ai
+|   |-- test_inference.py       # Test inferenza in locale con checkpoint Lightning
 |-- src/
 |   |-- data/
 |   |   |-- download.py         # Download CulturaX italiano
@@ -165,13 +169,26 @@ Addestra il modello da 700M parametri su 10 miliardi di token con ottimizzatore 
 bash scripts/03_pretrain.sh
 ```
 
-### Fase 4 -- Fine-tuning
+### Fase 4 -- Instruction Fine-tuning
 
-Instruction fine-tuning sul modello pre-addestrato per migliorare le capacita' di risposta a domande e istruzioni.
+Instruction fine-tuning sul modello pre-addestrato per migliorare le capacita' di risposta a domande e istruzioni. Il fine-tuning trasforma il modello da "completatore di testo" a "assistente che risponde a domande".
+
+**Prerequisiti**:
+- Checkpoint pre-training completato (`checkpoints/pretrain/last.ckpt`)
+- Dataset instruction italiano (es. OASST1, UltraChat tradotto, o dataset custom)
+
+**Dataset**: un dataset italiano di istruzioni/domande-risposte. Opzioni:
+- `OASST1` (OpenAssistant) - conversazioni in italiano gia' disponibili
+- `UltraChat` tradotto in italiano
+- Dataset custom con formato `instruction`/`input`/`output`
+
+**Training**: ~1-2h su H100 (dataset piccolo, modello 700M, LR basso 2e-5, 3 epoch). Usa `--mode finetune --resume-from checkpoints/pretrain/last.ckpt`.
 
 ```bash
 bash scripts/04_finetune.sh
 ```
+
+Dopo il fine-tuning, il modello puo' essere usato in modalita' chat/Q&A.
 
 ### Fase 5 -- Valutazione
 
@@ -180,6 +197,54 @@ Esegue test di generazione e Q&A per valutare la qualita' del modello addestrato
 ```bash
 bash scripts/05_evaluate.sh
 ```
+
+---
+
+## Test Inferenza in Locale
+
+Lo script `scripts/test_inference.py` permette di testare un checkpoint Lightning (`.ckpt`) su GPU locale (es. RTX 3060 12GB). A differenza di `src/inference/generate.py`, carica direttamente i checkpoint di PyTorch Lightning senza dover esportare in `model.pt`.
+
+### Generazione libera (pre-train)
+
+```bash
+python scripts/test_inference.py \
+    --checkpoint checkpoints/pretrain/last.ckpt \
+    --tokenizer-path tokenizer/boccaccio-32k.json \
+    --prompt "L'intelligenza artificiale in Italia" \
+    --max-new-tokens 256 \
+    --temperature 0.7
+```
+
+### Modalita' Q&A (dopo fine-tuning)
+
+```bash
+python scripts/test_inference.py \
+    --checkpoint checkpoints/finetune/last.ckpt \
+    --tokenizer-path tokenizer/boccaccio-32k.json \
+    --mode qa \
+    --context "Roma e' la capitale della Repubblica Italiana." \
+    --question "Qual e' la capitale dell'Italia?" \
+    --max-new-tokens 128 \
+    --temperature 0.3
+```
+
+### Parametri disponibili
+
+| Parametro | Default | Descrizione |
+|-----------|---------|-------------|
+| `--checkpoint` | (richiesto) | Path al file .ckpt |
+| `--tokenizer-path` | `tokenizer/boccaccio-32k.json` | Path al tokenizer |
+| `--config-path` | `configs/model.yaml` | Config del modello |
+| `--config-variant` | `model` | Variante (model o nano) |
+| `--mode` | `generate` | generate o qa |
+| `--prompt` | - | Prompt per generate |
+| `--context` | - | Contesto per qa |
+| `--question` | - | Domanda per qa |
+| `--max-new-tokens` | 256 | Token da generare |
+| `--temperature` | 0.7 | Temperatura sampling (0 = greedy) |
+| `--top-k` | 50 | Top-k filtering |
+| `--top-p` | 0.9 | Top-p nucleus sampling |
+| `--device` | auto | cuda, cuda:0, cpu |
 
 ---
 
@@ -230,11 +295,13 @@ Tutti gli iperparametri sono centralizzati in file YAML nella directory `configs
 
 | Risorsa          | Stima                              |
 |------------------|------------------------------------|
-| Hardware         | 1x NVIDIA H100 80GB                |
-| Tempo pre-training | ~15-20 ore                       |
-| Costo compute    | ~30-35 EUR                         |
+| Hardware         | 1x NVIDIA H100 80GB (Lightning.ai) |
+| Tempo pre-training | ~25 ore (12.779 step, 6.7B token) |
+| Costo pre-training | ~87 crediti Lightning (~$30)     |
+| Tempo fine-tuning | ~1-2 ore                          |
+| Costo fine-tuning | ~7 crediti Lightning (~$2.5)      |
 
-Le stime si riferiscono al pre-training su 5 miliardi di token con le configurazioni di default. Il fine-tuning richiede risorse significativamente inferiori.
+Le stime si riferiscono al pre-training su 6.7 miliardi di token (1 epoch) con le configurazioni di default. Il fine-tuning richiede risorse significativamente inferiori.
 
 ---
 
