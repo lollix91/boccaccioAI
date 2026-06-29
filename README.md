@@ -138,6 +138,10 @@ La pipeline di filtering e' composta da tre stage streaming (shard per shard) pe
 
 > **Nota sulla strategia di dedup**: Inizialmente era previsto MinHash LSH per catturare anche i near-duplicate, ma su 9.26M documenti con 128 permutazioni richiedeva ~15 ore e ~10GB di RAM, con rischio OOM su VM 16GB. L'exact dedup via xxhash completa in ~10 minuti con ~200MB di RAM. CulturaX e' gia' pre-deduplicato da HuggingFace, quindi i near-duplicate residui sono trascurabili per un modello da 1B parametri.
 
+La **pre-tokenizzazione** converte il testo filtrato in token IDs binari (uint16) usando il tokenizer BPE addestrato in Fase 1. Anche questo step usa un'architettura streaming: tokenizza uno shard alla volta e scrive i token IDs direttamente su file binario, evitando di caricare l'intero corpus in RAM. Output: `data/tokenized/pretrain/train.bin`, `val.bin`, `meta.json`.
+
+> **Nota sulla tokenizzazione streaming**: La versione originale caricava tutti i 30GB di testo + ~10B token IDs in RAM come liste Python, causando OOM su VM 16GB. La versione streaming usa ~240MB di RAM e completa in ~3 ore.
+
 ```bash
 bash scripts/02_preprocess_data.sh
 ```
