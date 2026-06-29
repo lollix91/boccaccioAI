@@ -190,6 +190,8 @@ def _build_callbacks(
             dirpath=checkpoint_dir,
             every_n_train_steps=checkpoint_every,
             save_top_k=save_top_k,
+            monitor="val/loss",
+            mode="min",
             save_last=True,
         ),
         LearningRateMonitor(logging_interval="step"),
