@@ -1,12 +1,8 @@
 """BoccaccioAI - Lightning.ai Training Monitor.
 
-Si collega allo Studio via SSH e mostra lo stato del training:
-- Step corrente / totale
-- Loss e perplexity
-- Tempo trascorso e stimato
-- GPU utilization e memoria
-- Checkpoint salvati
-- Crediti consumati
+Si collega allo Studio via SSH e mostra lo stato del training leggendo
+le metriche direttamente da TensorBoard (piu' affidabile del parsing
+del progress bar di Lightning).
 
 Uso:
     python scripts/lightning_monitor.py
@@ -20,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import sys
 import time
 
@@ -35,17 +30,20 @@ LIGHTNING_USER = "s_01kw9jgs29f9znwd4cwpcctbpa"
 LIGHTNING_KEY = os.path.expanduser("~/.ssh/lightning_rsa")
 PROJECT_DIR = "/home/zeus/content/boccaccioAI"
 H100_CREDITS_PER_HOUR = 3.5
+TOTAL_STEPS = 12779
 
 
 # ─── Helper ───────────────────────────────────────────────────
 
-def run(ssh: paramiko.SSHClient, cmd: str, timeout: int = 30) -> tuple[int, str]:
+def run(ssh: paramiko.SSHClient, cmd: str, timeout: int = 60) -> tuple[int, str]:
     """Esegue un comando SSH e ritorna (exit_code, output)."""
     stdin, stdout, stderr = ssh.exec_command(cmd, timeout=timeout)
     exit_code = stdout.channel.recv_exit_status()
     out = stdout.read().decode("utf-8", errors="replace")
     err = stderr.read().decode("utf-8", errors="replace")
-    return exit_code, (out + err).strip()
+    combined = (out + err).strip()
+    # Sanitize per Windows console (cp1252)
+    return exit_code, combined.encode("ascii", errors="replace").decode("ascii")
 
 
 def format_elapsed(seconds: int) -> str:
@@ -61,97 +59,68 @@ def format_elapsed(seconds: int) -> str:
         return f"{secs}s"
 
 
-def parse_training_log(log_text: str) -> dict:
-    """Estrae metriche dal log di training di PyTorch Lightning."""
-    result = {
-        "step": None, "total_steps": None,
-        "train_loss": None, "val_loss": None,
-        "train_ppl": None, "val_ppl": None,
-        "lr": None, "epoch": None, "tokens_per_sec": None,
-    }
+# ─── TensorBoard reader (eseguito sul server) ─────────────────
 
-    lines = log_text.strip().split("\n")
+TB_SCRIPT = '''
+import sys
+import os
+import glob
+try:
+    from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+except ImportError:
+    print("ERROR: tensorboard not installed")
+    sys.exit(1)
 
-    # Step corrente
-    for line in reversed(lines):
-        m = re.search(r"global step[:\s]+(\d+)", line, re.IGNORECASE)
-        if m:
-            result["step"] = int(m.group(1))
-            break
+log_dir = "{project}/logs/pretrain"
+versions = sorted(glob.glob(os.path.join(log_dir, "version_*")))
+if not versions:
+    print("NO_LOGS")
+    sys.exit(0)
 
-    # Total steps (stampato all'inizio)
-    for line in lines:
-        if "pre-training for" in line.lower() or "total steps" in line.lower():
-            m = re.search(r"(\d+)\s+steps?", line, re.IGNORECASE)
-            if m:
-                result["total_steps"] = int(m.group(1))
-                break
+latest = versions[-1]
+ea = EventAccumulator(latest)
+ea.Reload()
 
-    # Train loss
-    for line in reversed(lines):
-        if "train/loss" in line.lower() or "'train/loss'" in line:
-            m = re.search(r"train/loss[:\s]+([\d.]+)", line, re.IGNORECASE)
-            if m:
-                result["train_loss"] = float(m.group(1))
-            m = re.search(r"train/ppl[:\s]+([\d.]+)", line, re.IGNORECASE)
-            if m:
-                result["train_ppl"] = float(m.group(1))
-            break
+tags = ea.Tags().get("scalars", [])
+if not tags:
+    print("NO_TAGS")
+    sys.exit(0)
 
-    # Val loss
-    for line in reversed(lines):
-        if "val/loss" in line.lower() or "'val/loss'" in line:
-            m = re.search(r"val/loss[:\s]+([\d.]+)", line, re.IGNORECASE)
-            if m:
-                result["val_loss"] = float(m.group(1))
-            m = re.search(r"val/ppl[:\s]+([\d.]+)", line, re.IGNORECASE)
-            if m:
-                result["val_ppl"] = float(m.group(1))
-            break
+results = {{}}
+for tag in tags:
+    events = ea.Scalars(tag)
+    if events:
+        last = events[-1]
+        first = events[0]
+        results[tag] = (first.step, first.value, last.step, last.value)
 
-    # LR
-    for line in reversed(lines):
-        m = re.search(r"lr[:\s]+([\d.e-]+)", line, re.IGNORECASE)
-        if m:
-            result["lr"] = float(m.group(1))
-            break
-
-    # Tokens/sec
-    for line in reversed(lines):
-        m = re.search(r"tokens.?per.?sec[:\s]+([\d.]+)", line, re.IGNORECASE)
-        if m:
-            result["tokens_per_sec"] = float(m.group(1))
-            break
-
-    # Epoch
-    for line in reversed(lines):
-        m = re.search(r"epoch[:\s]+(\d+)", line, re.IGNORECASE)
-        if m:
-            result["epoch"] = int(m.group(1))
-            break
-
-    return result
+# Stampa in formato semplice
+for tag, (fstep, fval, lstep, lval) in results.items():
+    print(f"METRIC|{{tag}}|{{fstep}}|{{fval:.6f}}|{{lstep}}|{{lval:.6f}}")
+'''
 
 
-def parse_tmux_progress(tmux_text: str) -> dict:
-    """Estrae metriche dallo schermo tmux."""
-    result = {"step": None, "train_loss": None, "progress_pct": None}
-    lines = tmux_text.strip().split("\n")
+def read_tensorboard_metrics(ssh: paramiko.SSHClient) -> dict:
+    """Legge le metriche da TensorBoard sul server."""
+    script = TB_SCRIPT.format(project=PROJECT_DIR)
+    run(ssh, "mkdir -p /tmp/_tb_check")
+    run(ssh, f"cat > /tmp/_tb_check/check.py << 'PYEOF'\n{script}\nPYEOF")
+    code, out = run(ssh, "/home/zeus/miniconda3/envs/cloudspace/bin/python /tmp/_tb_check/check.py 2>&1")
+    run(ssh, "rm -rf /tmp/_tb_check")
 
-    for line in reversed(lines):
-        m = re.search(r"(\d+)%.*?(\d+)/(\d+)", line)
-        if m:
-            result["progress_pct"] = int(m.group(1))
-            result["step"] = int(m.group(2))
-            break
-
-    for line in reversed(lines):
-        m = re.search(r"loss[=: ]+([\d.]+)", line, re.IGNORECASE)
-        if m:
-            result["train_loss"] = float(m.group(1))
-            break
-
-    return result
+    metrics = {}
+    for line in out.split("\n"):
+        if line.startswith("METRIC|"):
+            parts = line.split("|")
+            if len(parts) == 6:
+                tag = parts[1]
+                fstep = int(parts[2])
+                fval = float(parts[3])
+                lstep = int(parts[4])
+                lval = float(parts[5])
+                metrics[tag] = {"first_step": fstep, "first_val": fval,
+                                "last_step": lstep, "last_val": lval}
+    return metrics
 
 
 # ─── Main ─────────────────────────────────────────────────────
@@ -184,75 +153,89 @@ def main() -> None:
         code, tmux_sessions = run(ssh, "tmux list-sessions 2>/dev/null")
         tmux_running = "boccaccio" in tmux_sessions
 
-        # ─── Schermo tmux ────────────────────────────────────
-        tmux_text = ""
-        if tmux_running:
-            code, tmux_text = run(ssh, "tmux capture-pane -t boccaccio -p -S -50 2>/dev/null")
+        # ─── Metriche TensorBoard ────────────────────────────
+        metrics = read_tensorboard_metrics(ssh)
 
-        # ─── Log file ────────────────────────────────────────
-        code, log_text = run(ssh, f"tail -200 {PROJECT_DIR}/logs/pretrain_training.log 2>/dev/null")
+        # ─── GPU ─────────────────────────────────────────────
+        code, gpu_out = run(ssh, "nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader 2>/dev/null")
 
-        # ─── Parsing ─────────────────────────────────────────
-        log_data = parse_training_log(log_text) if log_text else {}
-        tmux_data = parse_tmux_progress(tmux_text) if tmux_text else {}
+        # ─── Checkpoint ──────────────────────────────────────
+        code, ckpt_out = run(ssh, f"ls -lh {PROJECT_DIR}/checkpoints/pretrain/*.ckpt 2>/dev/null")
 
-        step = tmux_data.get("step") or log_data.get("step")
-        total_steps = log_data.get("total_steps")
-        train_loss = log_data.get("train_loss") or tmux_data.get("train_loss")
-        val_loss = log_data.get("val_loss")
-        train_ppl = log_data.get("train_ppl")
-        val_ppl = log_data.get("val_ppl")
-        lr = log_data.get("lr")
-        tokens_per_sec = log_data.get("tokens_per_sec")
-        epoch = log_data.get("epoch")
-        progress_pct = tmux_data.get("progress_pct")
+        # ─── Tempo processo ──────────────────────────────────
+        code, pid_out = run(ssh, "pgrep -f 'src.training.train' | head -1 2>/dev/null")
+        uptime_str = ""
+        if pid_out and pid_out.strip().isdigit():
+            pid = pid_out.strip()
+            code, uptime = run(ssh, f"ps -o etimes= -p {pid} 2>/dev/null")
+            if uptime and uptime.strip().isdigit():
+                uptime_str = uptime.strip()
 
-        if step and total_steps and not progress_pct:
-            progress_pct = int(step / total_steps * 100)
-
-        # ─── Stato ───────────────────────────────────────────
+        # ─── Output ──────────────────────────────────────────
         print(f"  Stato:      {'RUNNING' if tmux_running else 'STOPPED'}")
-        if step is not None:
-            print(f"  Step:       {step}" + (f" / {total_steps}" if total_steps else ""))
-        if progress_pct is not None:
-            print(f"  Progresso:  {progress_pct}%")
-        if epoch is not None:
-            print(f"  Epoch:      {epoch}")
-        print()
 
-        # ─── Barra ───────────────────────────────────────────
-        if progress_pct is not None and progress_pct >= 0:
+        if metrics:
+            step = metrics.get("train/loss", {}).get("last_step", 0)
+            progress_pct = int(step / TOTAL_STEPS * 100) if TOTAL_STEPS > 0 else 0
+
+            print(f"  Step:       {step} / {TOTAL_STEPS}")
+            print(f"  Progresso:  {progress_pct}%")
+            print()
+
+            # Barra
             bar_width = 40
             filled = int(bar_width * progress_pct / 100)
             bar = "=" * filled + "-" * (bar_width - filled)
             print(f"  [{bar}] {progress_pct}%")
             print()
 
-        # ─── Metriche ────────────────────────────────────────
-        print("  Metriche:")
-        if train_loss is not None:
-            ppl_str = f"  (ppl: {train_ppl:.2f})" if train_ppl else ""
-            print(f"    Train loss:    {train_loss:.4f}{ppl_str}")
-        if val_loss is not None:
-            ppl_str = f"  (ppl: {val_ppl:.2f})" if val_ppl else ""
-            print(f"    Val loss:      {val_loss:.4f}{ppl_str}")
-        if lr is not None:
-            print(f"    Learning rate: {lr:.2e}")
-        if tokens_per_sec is not None:
-            print(f"    Tokens/sec:    {tokens_per_sec:.0f}")
-        print()
+            # Metriche
+            print("  Metriche:")
+            if "train/loss" in metrics:
+                m = metrics["train/loss"]
+                ppl = metrics.get("train/ppl", {}).get("last_val")
+                ppl_str = f"  (ppl: {ppl:.2f})" if ppl else ""
+                print(f"    Train loss:    {m['last_val']:.4f}{ppl_str}")
+            if "val/loss" in metrics:
+                m = metrics["val/loss"]
+                ppl = metrics.get("val/ppl", {}).get("last_val")
+                ppl_str = f"  (ppl: {ppl:.2f})" if ppl else ""
+                print(f"    Val loss:      {m['last_val']:.4f}{ppl_str}")
+            if "train/lr" in metrics:
+                lr = metrics["train/lr"]["last_val"]
+                print(f"    Learning rate: {lr:.2e}")
+            if "perf/tokens_per_sec" in metrics:
+                tps = metrics["perf/tokens_per_sec"]["last_val"]
+                print(f"    Tokens/sec:    {tps:,.0f}")
+            print()
 
-        # ─── GPU ─────────────────────────────────────────────
-        code, gpu_out = run(ssh, "nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader 2>/dev/null")
+            # Tempo e costo
+            if uptime_str:
+                elapsed = int(uptime_str)
+                print(f"  Tempo trascorso: {format_elapsed(elapsed)}")
+                if step > 0 and elapsed > 0:
+                    steps_per_sec = step / elapsed
+                    remaining = TOTAL_STEPS - step
+                    if remaining > 0 and steps_per_sec > 0:
+                        eta = int(remaining / steps_per_sec)
+                        print(f"  Tempo rimanente: {format_elapsed(eta)}")
+                elapsed_h = elapsed / 3600
+                cost = elapsed_h * H100_CREDITS_PER_HOUR
+                print(f"  Crediti consumati: ~{cost:.1f} ({elapsed_h:.1f}h x {H100_CREDITS_PER_HOUR})")
+                print()
+        else:
+            print("  (nessuna metrica disponibile ancora)")
+            print()
+
+        # GPU
         if gpu_out:
             parts = [p.strip() for p in gpu_out.split(",")]
             if len(parts) >= 4:
                 print(f"  GPU:  {parts[0]} util, {parts[1]} / {parts[2]} VRAM, {parts[3]}C")
             print()
 
-        # ─── Checkpoint ──────────────────────────────────────
-        code, ckpt_out = run(ssh, f"ls -lh {PROJECT_DIR}/checkpoints/pretrain/*.ckpt 2>/dev/null")
-        if ckpt_out:
+        # Checkpoint
+        if ckpt_out and "No such file" not in ckpt_out:
             print("  Checkpoint salvati:")
             for line in ckpt_out.split("\n"):
                 if line.strip():
@@ -260,40 +243,10 @@ def main() -> None:
                     if len(parts) >= 5:
                         name = os.path.basename(parts[-1])
                         size = parts[4]
-                        print(f"    {name:40s} {size}")
+                        print(f"    {name:45s} {size}")
             print()
         else:
             print("  Checkpoint: nessuno ancora salvato")
-            print()
-
-        # ─── Schermo tmux ────────────────────────────────────
-        if tmux_running and tmux_text:
-            lines = [l for l in tmux_text.split("\n") if l.strip()]
-            useful = [l for l in lines if "httpx" not in l and "HTTP Request" not in l]
-
-            print(f"  Schermo tmux (ultime {min(15, len(useful))} righe):")
-            print("  " + "-" * 56)
-            for line in useful[-15:]:
-                clean = line.replace("\r", "").strip()
-                if len(clean) > 120:
-                    clean = clean[:120] + "..."
-                print(f"  {clean}")
-            print()
-
-        # ─── Tempo e costo ───────────────────────────────────
-        code, uptime = run(ssh, "ps -o etimes= -p $(pgrep -f 'src.training.train' | head -1) 2>/dev/null")
-        if uptime and uptime.strip().isdigit():
-            elapsed = int(uptime.strip())
-            print(f"  Tempo trascorso: {format_elapsed(elapsed)}")
-            if step and total_steps and step > 0 and elapsed > 0:
-                steps_per_sec = step / elapsed
-                remaining = total_steps - step
-                if remaining > 0 and steps_per_sec > 0:
-                    eta = int(remaining / steps_per_sec)
-                    print(f"  Tempo rimanente: {format_elapsed(eta)}")
-            elapsed_h = elapsed / 3600
-            cost = elapsed_h * H100_CREDITS_PER_HOUR
-            print(f"  Crediti consumati: ~{cost:.1f} ({elapsed_h:.1f}h x {H100_CREDITS_PER_HOUR})")
             print()
 
         print("=" * 60)
