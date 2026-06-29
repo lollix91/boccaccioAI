@@ -1,12 +1,12 @@
 # BoccaccioAI - Training Configuration
-# De Lauretis Tech
+# De Lauretis Tech - 700M model, 10B tokens (Chinchilla ratio ~14:1)
 
 # ─── Pre-training ───────────────────────────────────────────────
 pretrain:
   # Data
   dataset_path: "data/tokenized/pretrain"
   sequence_length: 2048
-  num_tokens: 5_000_000_000     # 5B tokens target (budget-constrained)
+  num_tokens: 10_000_000_000    # 10B tokens target (Chinchilla-near-optimal for 700M)
 
   # Batch size
   micro_batch_size: 8           # Per-GPU batch size
@@ -15,8 +15,8 @@ pretrain:
 
   # Optimizer
   optimizer: "adamw"
-  learning_rate: 6.0e-4
-  min_learning_rate: 6.0e-5
+  learning_rate: 4.0e-4         # Slightly lower for 700M vs 1B
+  min_learning_rate: 4.0e-5
   weight_decay: 0.1
   beta1: 0.9
   beta2: 0.95
@@ -24,7 +24,7 @@ pretrain:
 
   # LR Schedule
   scheduler: "cosine"
-  warmup_steps: 750             # ~8% of total (~9500 steps)
+  warmup_steps: 1500            # ~8% of total (~19,000 steps for 10B tokens)
 
   # Stability
   gradient_clip_val: 1.0
@@ -76,7 +76,7 @@ finetune:
   num_epochs: 3
 
   # LoRA config (optional, set use_lora: true to enable)
-  use_lora: false               # Full fine-tuning by default (1B is small enough)
+  use_lora: false               # Full fine-tuning by default (700M is small enough)
   lora_rank: 32
   lora_alpha: 64
   lora_dropout: 0.05

@@ -1,17 +1,18 @@
 # BoccaccioAI - Model Architecture Configuration
-# De Lauretis Tech - 1B Italian LLM
+# De Lauretis Tech - 700M Italian LLM
+# Chinchilla-optimal: 700M params trained on ~10B tokens (ratio ~14:1)
 
 model:
-  name: "boccaccio-1b"
+  name: "boccaccio-700m"
   architecture: "decoder-only"
 
   # Core dimensions
   vocab_size: 32000
-  hidden_size: 2048
-  num_layers: 24
-  num_attention_heads: 16
-  num_kv_heads: 4               # GQA ratio 4:1 (16 query heads, 4 KV heads)
-  intermediate_size: 5504       # SwiGLU: ~(8/3) * hidden_size, rounded to multiple of 256
+  hidden_size: 1536
+  num_layers: 26
+  num_attention_heads: 12
+  num_kv_heads: 4               # GQA ratio 3:1 (12 query heads, 4 KV heads)
+  intermediate_size: 4096       # SwiGLU: ~(8/3) * hidden_size = 4096
   max_position_embeddings: 2048
 
   # Architecture choices

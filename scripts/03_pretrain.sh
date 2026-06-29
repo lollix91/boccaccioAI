@@ -3,7 +3,7 @@
 # De Lauretis Tech
 set -euo pipefail
 
-echo "=== BoccaccioAI - Pre-training 1B Model ==="
+echo "=== BoccaccioAI - Pre-training 700M Model ==="
 
 python -m src.training.train \
     --mode pretrain \

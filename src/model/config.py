@@ -9,11 +9,11 @@ import yaml
 @dataclass
 class BoccaccioConfig:
     vocab_size: int = 32000
-    hidden_size: int = 2048
-    num_layers: int = 24
-    num_attention_heads: int = 16
+    hidden_size: int = 1536
+    num_layers: int = 26
+    num_attention_heads: int = 12
     num_kv_heads: int = 4
-    intermediate_size: int = 5504
+    intermediate_size: int = 4096
     max_position_embeddings: int = 2048
     activation_function: str = "swiglu"
     positional_embedding: str = "rope"

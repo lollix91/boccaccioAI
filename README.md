@@ -1,6 +1,6 @@
 # BoccaccioAI
 
-**Modello linguistico nativo italiano da 1 miliardo di parametri, addestrato da zero.**
+**Modello linguistico nativo italiano da 700 milioni di parametri, addestrato da zero.**
 
 *De Lauretis Tech*
 
@@ -8,15 +8,16 @@
 
 ## Panoramica
 
-BoccaccioAI e' un modello linguistico decoder-only da circa 1 miliardo di parametri, addestrato interamente da zero su testo italiano estratto dal dataset CulturaX. Il modello e' ottimizzato per compiti di generazione testuale e Question & Answering in lingua italiana.
+BoccaccioAI e' un modello linguistico decoder-only da circa 700 milioni di parametri, addestrato interamente da zero su testo italiano estratto dal dataset CulturaX. Il modello e' ottimizzato per compiti di generazione testuale e Question & Answering in lingua italiana.
 
 Caratteristiche principali:
 
 - Tokenizer BPE custom con vocabolario da 32.000 token, addestrato specificamente su testo italiano.
-- Grouped Query Attention (GQA) con rapporto 4:1 per ridurre la memoria in fase di inferenza.
+- Grouped Query Attention (GQA) con rapporto 3:1 per ridurre la memoria in fase di inferenza.
 - Funzione di attivazione SwiGLU per una migliore efficienza di addestramento.
 - Rotary Position Embeddings (RoPE) per la codifica posizionale relativa.
 - Compatibilita' con Flash Attention 2 per l'accelerazione delle operazioni di attenzione.
+- Architettura scalata secondo le Chinchilla Scaling Laws (ratio token/parametri ~14:1).
 
 ---
 
@@ -24,11 +25,11 @@ Caratteristiche principali:
 
 | Componente         | Specifica                          |
 |--------------------|------------------------------------|
-| Parametri          | ~1B                                |
-| Hidden Size        | 2048                               |
-| Layer              | 24                                 |
-| Attention Heads    | 16 (GQA 4:1, 4 KV heads)          |
-| FFN                | SwiGLU (intermediate 5504)         |
+| Parametri          | ~700M                              |
+| Hidden Size        | 1536                               |
+| Layer              | 26                                 |
+| Attention Heads    | 12 (GQA 3:1, 4 KV heads)          |
+| FFN                | SwiGLU (intermediate 4096)         |
 | Posizionale        | RoPE (theta 10000)                 |
 | Normalizzazione    | RMSNorm (eps 1e-5)                 |
 | Contesto           | 2048 token                         |
@@ -50,7 +51,7 @@ boccaccioAI/
 |   |-- 01_train_tokenizer.sh   # Fase 1: addestramento tokenizer
 |   |-- 02_preprocess_data.sh   # Fase 2: pipeline dati (download, filtro, tokenizzazione)
 |   |-- 02_5_smoke_test.sh      # Fase 2.5: smoke test su GPU locale (modello nano)
-|   |-- 03_pretrain.sh          # Fase 3: pre-training modello 1B
+|   |-- 03_pretrain.sh          # Fase 3: pre-training modello 700M
 |   |-- 04_finetune.sh          # Fase 4: instruction fine-tuning
 |   |-- 05_evaluate.sh          # Fase 5: valutazione e test
 |   |-- vm_setup.sh             # Setup VM Hetzner per Fasi 1-2
@@ -136,7 +137,7 @@ La pipeline di filtering e' composta da tre stage streaming (shard per shard) pe
 2. **Exact deduplication (xxhash)** - rimuove duplicati esatti calcolando xxhash del testo normalizzato. RAM: ~200MB per 10M documenti. Output: `data/filtered/`
 3. **Perplexity filtering** (opzionale) - richiede modello KenLM. Skippato se non fornito.
 
-> **Nota sulla strategia di dedup**: Inizialmente era previsto MinHash LSH per catturare anche i near-duplicate, ma su 9.26M documenti con 128 permutazioni richiedeva ~15 ore e ~10GB di RAM, con rischio OOM su VM 16GB. L'exact dedup via xxhash completa in ~10 minuti con ~200MB di RAM. CulturaX e' gia' pre-deduplicato da HuggingFace, quindi i near-duplicate residui sono trascurabili per un modello da 1B parametri.
+> **Nota sulla strategia di dedup**: Inizialmente era previsto MinHash LSH per catturare anche i near-duplicate, ma su 9.26M documenti con 128 permutazioni richiedeva ~15 ore e ~10GB di RAM, con rischio OOM su VM 16GB. L'exact dedup via xxhash completa in ~10 minuti con ~200MB di RAM. CulturaX e' gia' pre-deduplicato da HuggingFace, quindi i near-duplicate residui sono trascurabili per un modello da 700M parametri.
 
 La **pre-tokenizzazione** converte il testo filtrato in token IDs binari (uint16) usando il tokenizer BPE addestrato in Fase 1. Anche questo step usa un'architettura streaming: tokenizza uno shard alla volta e scrive i token IDs direttamente su file binario, evitando di caricare l'intero corpus in RAM. Output: `data/tokenized/pretrain/train.bin`, `val.bin`, `meta.json`.
 
@@ -158,7 +159,7 @@ Requisiti: 1x GPU con almeno 4GB VRAM (RTX 3060 12GB e' sufficiente). Tempo stim
 
 ### Fase 3 -- Pre-training
 
-Addestra il modello da 1B parametri su 5 miliardi di token con ottimizzatore AdamW, schedule cosine con warmup e precisione BF16 mista.
+Addestra il modello da 700M parametri su 10 miliardi di token con ottimizzatore AdamW, schedule cosine con warmup e precisione BF16 mista. Il ratio token/parametri (~14:1) e' vicino all'ottimale secondo le Chinchilla Scaling Laws.
 
 ```bash
 bash scripts/03_pretrain.sh

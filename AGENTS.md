@@ -1,6 +1,6 @@
 # AGENTS.md -- BoccaccioAI Project Rules
 
-De Lauretis Tech -- BoccaccioAI 1B Italian LLM
+De Lauretis Tech -- BoccaccioAI 700M Italian LLM
 
 ---
 
@@ -131,9 +131,9 @@ checkpoints/      Model checkpoints (not committed). Subdirs: pretrain/, finetun
 | Decision | Choice | Rationale |
 |---|---|---|
 | Decoder-only transformer | Standard autoregressive LM | Simplest architecture for text generation; proven at scale by GPT, LLaMA, Mistral. |
-| ~1B parameters | 2048 hidden, 24 layers | Largest model trainable on a single H100 within a reasonable time/cost budget (~15-20h, ~30-35 EUR). |
-| GQA 4:1 | 16 query heads, 4 KV heads | Reduces KV cache memory by 4x during inference with minimal quality loss vs. full MHA. Follows LLaMA 2/3 approach. |
-| SwiGLU activation | Intermediate size 5504 | Better training efficiency than ReLU/GELU. Size follows ~(8/3)*hidden rounded to nearest multiple of 256. |
+| ~700M parameters | 1536 hidden, 26 layers | Chinchilla-near-optimal for 10B training tokens on a single H100 (~25h, ~50 EUR). Ratio ~14:1 token/params. |
+| GQA 3:1 | 12 query heads, 4 KV heads | Reduces KV cache memory by 3x during inference with minimal quality loss vs. full MHA. Follows LLaMA 2/3 approach. |
+| SwiGLU activation | Intermediate size 4096 | Better training efficiency than ReLU/GELU. Size follows ~(8/3)*hidden. |
 | RoPE | theta=10000 | Relative positional encoding that generalizes better than learned absolute embeddings. Standard choice for modern LLMs. |
 | RMSNorm | eps=1e-5 | Faster than LayerNorm (no mean computation), equally effective for transformers. |
 | BPE tokenizer 32K | Trained on Italian text | Custom Italian vocabulary avoids the token efficiency penalty of multilingual tokenizers. 32K is a good balance between vocabulary coverage and embedding table size. |
