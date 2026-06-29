@@ -9,9 +9,9 @@ pretrain:
   num_tokens: 10_000_000_000    # 10B tokens target (Chinchilla-near-optimal for 700M)
 
   # Batch size
-  micro_batch_size: 8           # Per-GPU batch size
-  gradient_accumulation_steps: 32
-  # Effective batch: 8 * 32 * 2048 = 524,288 tokens/step
+  micro_batch_size: 16          # Per-GPU batch size (saturates H100 VRAM)
+  gradient_accumulation_steps: 16
+  # Effective batch: 16 * 16 * 2048 = 524,288 tokens/step (unchanged)
 
   # Optimizer
   optimizer: "adamw"
