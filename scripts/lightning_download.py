@@ -4,7 +4,8 @@ Scarica i checkpoint del training e i log dallo Studio Lightning.ai
 sul PC locale.
 
 Uso:
-    python scripts/lightning_download.py --host <IP> --port <PORT> --password <PASSWORD>
+    python scripts/lightning_download.py
+    python scripts/lightning_download.py --checkpoints-only
 
 De Lauretis Tech
 """
@@ -18,6 +19,17 @@ import sys
 import paramiko
 
 
+# ─── Configurazione Lightning.ai ──────────────────────────────
+
+LIGHTNING_HOST = "ssh.lightning.ai"
+LIGHTNING_PORT = 22
+LIGHTNING_USER = "s_01kw9jgs29f9znwd4cwpcctbpa"
+LIGHTNING_KEY = os.path.expanduser("~/.ssh/lightning_rsa")
+PROJECT_DIR = "/home/zeus/content/boccaccioAI"
+
+
+# ─── Helper ───────────────────────────────────────────────────
+
 def run(ssh: paramiko.SSHClient, cmd: str, timeout: int = 30) -> tuple[int, str]:
     """Esegue un comando SSH e ritorna (exit_code, output)."""
     stdin, stdout, stderr = ssh.exec_command(cmd, timeout=timeout)
@@ -28,7 +40,7 @@ def run(ssh: paramiko.SSHClient, cmd: str, timeout: int = 30) -> tuple[int, str]
 
 
 def download_file(sftp: paramiko.SFTPClient, remote_path: str, local_path: str) -> bool:
-    """Scarica un file remoto. Ritorna True se successo, False se file non esiste."""
+    """Scarica un file remoto."""
     try:
         sftp.stat(remote_path)
     except FileNotFoundError:
@@ -41,13 +53,11 @@ def download_file(sftp: paramiko.SFTPClient, remote_path: str, local_path: str) 
     os.makedirs(os.path.dirname(local_path), exist_ok=True)
     remote_size = sftp.stat(remote_path).st_size
 
-    print(f"  Download: {remote_path} ({remote_size / 1e6:.1f} MB) -> {local_path}")
+    print(f"  Download: {os.path.basename(remote_path)} ({remote_size / 1e6:.1f} MB)")
 
-    downloaded = [0]
     last_print = [0]
 
     def callback(transferred: int, total: int) -> None:
-        downloaded[0] = transferred
         if total > 0:
             pct = transferred / total * 100
             if pct - last_print[0] >= 10 or transferred == total:
@@ -60,11 +70,11 @@ def download_file(sftp: paramiko.SFTPClient, remote_path: str, local_path: str) 
 
 
 def download_dir(sftp: paramiko.SFTPClient, remote_dir: str, local_dir: str) -> int:
-    """Scarica ricorsivamente una directory. Ritorna il numero di file scaricati."""
+    """Scarica ricorsivamente una directory."""
     try:
         entries = sftp.listdir_attr(remote_dir)
     except IOError:
-        print(f"  SKIP: {remote_dir} (directory non trovata)")
+        print(f"  SKIP: {remote_dir} (non trovata)")
         return 0
 
     os.makedirs(local_dir, exist_ok=True)
@@ -76,25 +86,25 @@ def download_dir(sftp: paramiko.SFTPClient, remote_dir: str, local_dir: str) -> 
 
         try:
             sftp.stat(remote_path)
-            # E' un file
             if download_file(sftp, remote_path, local_path):
                 count += 1
         except IOError:
-            # E' una directory, ricorsione
             count += download_dir(sftp, remote_path, local_path)
 
     return count
 
 
+# ─── Main ─────────────────────────────────────────────────────
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="BoccaccioAI - Lightning.ai Results Download")
-    parser.add_argument("--host", required=True, help="Studio SSH host")
-    parser.add_argument("--port", type=int, default=22, help="SSH port")
-    parser.add_argument("--user", default="root", help="SSH user")
+    parser.add_argument("--host", default=LIGHTNING_HOST, help="Studio SSH host")
+    parser.add_argument("--port", type=int, default=LIGHTNING_PORT, help="SSH port")
+    parser.add_argument("--user", default=LIGHTNING_USER, help="SSH user")
     parser.add_argument("--password", default=None, help="SSH password")
-    parser.add_argument("--key", default=None, help="SSH private key path")
+    parser.add_argument("--key", default=LIGHTNING_KEY, help="SSH private key path")
     parser.add_argument("--output-dir", default=".", help="Directory locale di destinazione")
-    parser.add_argument("--checkpoints-only", action="store_true", help="Scarica solo i checkpoint")
+    parser.add_argument("--checkpoints-only", action="store_true", help="Solo checkpoint")
     args = parser.parse_args()
 
     print("=" * 60)
@@ -103,24 +113,18 @@ def main() -> None:
     print()
 
     # ─── Connessione ──────────────────────────────────────────
-    print(f"Connessione a {args.host}:{args.port}...", end=" ")
+    print(f"Connessione a {args.host}...", end=" ")
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     try:
-        ssh.connect(
-            args.host,
-            port=args.port,
-            username=args.user,
-            password=args.password,
-            key_filename=args.key,
-            timeout=15,
-        )
+        ssh.connect(args.host, port=args.port, username=args.user,
+                    password=args.password, key_filename=args.key, timeout=15)
     except Exception as e:
         print(f"FALLITO: {e}")
         sys.exit(1)
     print("OK")
 
-    # ─── Verifica training completato o in corso ──────────────
+    # ─── Verifica training ────────────────────────────────────
     code, tmux_out = run(ssh, "tmux list-sessions 2>/dev/null")
     tmux_running = "boccaccio" in tmux_out
 
@@ -133,53 +137,52 @@ def main() -> None:
             ssh.close()
             return
 
-    # ─── Lista checkpoint disponibili ─────────────────────────
+    # ─── Lista checkpoint ─────────────────────────────────────
     print()
-    print("Checkpoint disponibili sul server:")
-    code, ckpt_list = run(ssh, "ls -lh /root/boccaccioAI/checkpoints/pretrain/ 2>/dev/null")
+    print("Checkpoint disponibili:")
+    code, ckpt_list = run(ssh, f"ls -lh {PROJECT_DIR}/checkpoints/pretrain/ 2>/dev/null")
     if ckpt_list:
         print(ckpt_list)
     else:
-        print("  Nessun checkpoint trovato in checkpoints/pretrain/")
+        print("  Nessun checkpoint trovato.")
         ssh.close()
         return
     print()
 
     # ─── Download ─────────────────────────────────────────────
     sftp = ssh.open_sftp()
-    base = "/root/boccaccioAI"
     out = args.output_dir
 
     print("Download file...")
     print()
 
     downloaded_count = 0
-    total_size = 0
 
-    # Checkpoint (priorita' alta)
+    # Checkpoint
     print("  [Checkpoint pretrain]")
-    n = download_dir(sftp, f"{base}/checkpoints/pretrain", f"{out}/checkpoints/pretrain")
+    n = download_dir(sftp, f"{PROJECT_DIR}/checkpoints/pretrain", f"{out}/checkpoints/pretrain")
     downloaded_count += n
 
-    # Config (utile per riprendere)
     if not args.checkpoints_only:
+        # Config
         print()
         print("  [Config]")
         for cfg in ["model.yaml", "training.yaml", "tokenizer.yaml"]:
-            download_file(sftp, f"{base}/configs/{cfg}", f"{out}/configs/{cfg}")
+            download_file(sftp, f"{PROJECT_DIR}/configs/{cfg}", f"{out}/configs/{cfg}")
 
-        # Log di training
+        # Log
         print()
         print("  [Log]")
-        download_file(sftp, f"{base}/logs/pretrain_training.log", f"{out}/logs/pretrain_training.log")
+        download_file(sftp, f"{PROJECT_DIR}/logs/pretrain_training.log", f"{out}/logs/pretrain_training.log")
 
-        # TensorBoard logs
+        # TensorBoard
         print()
         print("  [TensorBoard logs]")
-        n = download_dir(sftp, f"{base}/logs/pretrain", f"{out}/logs/pretrain")
+        n = download_dir(sftp, f"{PROJECT_DIR}/logs/pretrain", f"{out}/logs/pretrain")
         downloaded_count += n
 
-    # Calcola dimensione totale
+    # Totale
+    total_size = 0
     for root, dirs, files in os.walk(f"{out}/checkpoints"):
         for f in files:
             total_size += os.path.getsize(os.path.join(root, f))
@@ -188,7 +191,7 @@ def main() -> None:
     ssh.close()
 
     print()
-    print(f"Download completato: {downloaded_count} elementi, {total_size / 1e6:.1f} MB totali")
+    print(f"Download completato: {downloaded_count} elementi, {total_size / 1e6:.1f} MB")
     print()
     print("=" * 60)
     print("  File scaricati in:")
@@ -200,7 +203,7 @@ def main() -> None:
     print("  Prossimo passo: Fase 4 (Fine-tuning)")
     print("    bash scripts/04_finetune.sh")
     print()
-    print("  Ricordati di FERMARE lo Studio su Lightning.ai per non pagare!")
+    print("  Ricordati di FERMARE lo Studio su Lightning.ai!")
     print("=" * 60)
 
 

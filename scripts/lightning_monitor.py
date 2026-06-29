@@ -6,9 +6,12 @@ Si collega allo Studio via SSH e mostra lo stato del training:
 - Tempo trascorso e stimato
 - GPU utilization e memoria
 - Checkpoint salvati
+- Crediti consumati
 
 Uso:
-    python scripts/lightning_monitor.py --host <IP> --port <PORT> --password <PASSWORD>
+    python scripts/lightning_monitor.py
+    python scripts/lightning_monitor.py --watch          # aggiorna ogni 30s
+    python scripts/lightning_monitor.py --watch --interval 60
 
 De Lauretis Tech
 """
@@ -23,6 +26,18 @@ import time
 
 import paramiko
 
+
+# ─── Configurazione Lightning.ai ──────────────────────────────
+
+LIGHTNING_HOST = "ssh.lightning.ai"
+LIGHTNING_PORT = 22
+LIGHTNING_USER = "s_01kw9jgs29f9znwd4cwpcctbpa"
+LIGHTNING_KEY = os.path.expanduser("~/.ssh/lightning_rsa")
+PROJECT_DIR = "/home/zeus/content/boccaccioAI"
+H100_CREDITS_PER_HOUR = 3.5
+
+
+# ─── Helper ───────────────────────────────────────────────────
 
 def run(ssh: paramiko.SSHClient, cmd: str, timeout: int = 30) -> tuple[int, str]:
     """Esegue un comando SSH e ritorna (exit_code, output)."""
@@ -47,43 +62,32 @@ def format_elapsed(seconds: int) -> str:
 
 
 def parse_training_log(log_text: str) -> dict:
-    """Estrae metriche dal log di training di PyTorch Lightning.
-
-    Cerca righe come:
-      Epoch 0, global step: 1500: ...
-      train/loss: 4.234
-      val/loss: 4.500
-    """
+    """Estrae metriche dal log di training di PyTorch Lightning."""
     result = {
-        "step": None,
-        "total_steps": None,
-        "train_loss": None,
-        "val_loss": None,
-        "train_ppl": None,
-        "val_ppl": None,
-        "lr": None,
-        "epoch": None,
-        "tokens_per_sec": None,
+        "step": None, "total_steps": None,
+        "train_loss": None, "val_loss": None,
+        "train_ppl": None, "val_ppl": None,
+        "lr": None, "epoch": None, "tokens_per_sec": None,
     }
 
     lines = log_text.strip().split("\n")
 
-    # Cerca step corrente (Lightning stampa "Epoch X, global step: Y")
+    # Step corrente
     for line in reversed(lines):
         m = re.search(r"global step[:\s]+(\d+)", line, re.IGNORECASE)
         if m:
             result["step"] = int(m.group(1))
             break
 
-    # Cerca total steps dal config (stampato all'inizio)
+    # Total steps (stampato all'inizio)
     for line in lines:
-        m = re.search(r"(\d+)\s+steps?", line, re.IGNORECASE)
         if "pre-training for" in line.lower() or "total steps" in line.lower():
+            m = re.search(r"(\d+)\s+steps?", line, re.IGNORECASE)
             if m:
                 result["total_steps"] = int(m.group(1))
                 break
 
-    # Cerca loss nelle ultime righe
+    # Train loss
     for line in reversed(lines):
         if "train/loss" in line.lower() or "'train/loss'" in line:
             m = re.search(r"train/loss[:\s]+([\d.]+)", line, re.IGNORECASE)
@@ -94,6 +98,7 @@ def parse_training_log(log_text: str) -> dict:
                 result["train_ppl"] = float(m.group(1))
             break
 
+    # Val loss
     for line in reversed(lines):
         if "val/loss" in line.lower() or "'val/loss'" in line:
             m = re.search(r"val/loss[:\s]+([\d.]+)", line, re.IGNORECASE)
@@ -104,14 +109,14 @@ def parse_training_log(log_text: str) -> dict:
                 result["val_ppl"] = float(m.group(1))
             break
 
-    # Learning rate
+    # LR
     for line in reversed(lines):
         m = re.search(r"lr[:\s]+([\d.e-]+)", line, re.IGNORECASE)
         if m:
             result["lr"] = float(m.group(1))
             break
 
-    # Tokens per sec
+    # Tokens/sec
     for line in reversed(lines):
         m = re.search(r"tokens.?per.?sec[:\s]+([\d.]+)", line, re.IGNORECASE)
         if m:
@@ -129,26 +134,17 @@ def parse_training_log(log_text: str) -> dict:
 
 
 def parse_tmux_progress(tmux_text: str) -> dict:
-    """Estrae metriche dallo schermo tmux (formato Lightning console)."""
-    result = {
-        "step": None,
-        "train_loss": None,
-        "val_loss": None,
-        "progress_pct": None,
-    }
-
+    """Estrae metriche dallo schermo tmux."""
+    result = {"step": None, "train_loss": None, "progress_pct": None}
     lines = tmux_text.strip().split("\n")
 
-    # Lightning stampa progress bar tipo: "Epoch 0: 15%|##  | 1500/10000"
     for line in reversed(lines):
         m = re.search(r"(\d+)%.*?(\d+)/(\d+)", line)
         if m:
             result["progress_pct"] = int(m.group(1))
             result["step"] = int(m.group(2))
-            # total_steps dal denominatore
             break
 
-    # Loss dal tmux
     for line in reversed(lines):
         m = re.search(r"loss[=: ]+([\d.]+)", line, re.IGNORECASE)
         if m:
@@ -158,28 +154,24 @@ def parse_tmux_progress(tmux_text: str) -> dict:
     return result
 
 
+# ─── Main ─────────────────────────────────────────────────────
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="BoccaccioAI - Lightning.ai Training Monitor")
-    parser.add_argument("--host", required=True, help="Studio SSH host")
-    parser.add_argument("--port", type=int, default=22, help="SSH port")
-    parser.add_argument("--user", default="root", help="SSH user")
+    parser.add_argument("--host", default=LIGHTNING_HOST, help="Studio SSH host")
+    parser.add_argument("--port", type=int, default=LIGHTNING_PORT, help="SSH port")
+    parser.add_argument("--user", default=LIGHTNING_USER, help="SSH user")
     parser.add_argument("--password", default=None, help="SSH password")
-    parser.add_argument("--key", default=None, help="SSH private key path")
-    parser.add_argument("--watch", action="store_true", help="Aggiorna ogni 30 secondi")
-    parser.add_argument("--interval", type=int, default=30, help="Intervallo aggiornamento (sec)")
+    parser.add_argument("--key", default=LIGHTNING_KEY, help="SSH private key path")
+    parser.add_argument("--watch", action="store_true", help="Aggiorna ogni N secondi")
+    parser.add_argument("--interval", type=int, default=30, help="Intervallo (sec)")
     args = parser.parse_args()
 
     def connect() -> paramiko.SSHClient:
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh.connect(
-            args.host,
-            port=args.port,
-            username=args.user,
-            password=args.password,
-            key_filename=args.key,
-            timeout=15,
-        )
+        ssh.connect(args.host, port=args.port, username=args.user,
+                    password=args.password, key_filename=args.key, timeout=15)
         return ssh
 
     def run_once(ssh: paramiko.SSHClient) -> None:
@@ -198,13 +190,12 @@ def main() -> None:
             code, tmux_text = run(ssh, "tmux capture-pane -t boccaccio -p -S -50 2>/dev/null")
 
         # ─── Log file ────────────────────────────────────────
-        code, log_text = run(ssh, "tail -200 /root/boccaccioAI/logs/pretrain_training.log 2>/dev/null")
+        code, log_text = run(ssh, f"tail -200 {PROJECT_DIR}/logs/pretrain_training.log 2>/dev/null")
 
         # ─── Parsing ─────────────────────────────────────────
         log_data = parse_training_log(log_text) if log_text else {}
         tmux_data = parse_tmux_progress(tmux_text) if tmux_text else {}
 
-        # Merge: tmux ha priorita' per step/progress, log per metriche
         step = tmux_data.get("step") or log_data.get("step")
         total_steps = log_data.get("total_steps")
         train_loss = log_data.get("train_loss") or tmux_data.get("train_loss")
@@ -216,7 +207,6 @@ def main() -> None:
         epoch = log_data.get("epoch")
         progress_pct = tmux_data.get("progress_pct")
 
-        # Calcola percentuale se abbiamo step e total
         if step and total_steps and not progress_pct:
             progress_pct = int(step / total_steps * 100)
 
@@ -241,13 +231,15 @@ def main() -> None:
         # ─── Metriche ────────────────────────────────────────
         print("  Metriche:")
         if train_loss is not None:
-            print(f"    Train loss:  {train_loss:.4f}" + (f"  (ppl: {train_ppl:.2f})" if train_ppl else ""))
+            ppl_str = f"  (ppl: {train_ppl:.2f})" if train_ppl else ""
+            print(f"    Train loss:    {train_loss:.4f}{ppl_str}")
         if val_loss is not None:
-            print(f"    Val loss:    {val_loss:.4f}" + (f"  (ppl: {val_ppl:.2f})" if val_ppl else ""))
+            ppl_str = f"  (ppl: {val_ppl:.2f})" if val_ppl else ""
+            print(f"    Val loss:      {val_loss:.4f}{ppl_str}")
         if lr is not None:
             print(f"    Learning rate: {lr:.2e}")
         if tokens_per_sec is not None:
-            print(f"    Tokens/sec:  {tokens_per_sec:.0f}")
+            print(f"    Tokens/sec:    {tokens_per_sec:.0f}")
         print()
 
         # ─── GPU ─────────────────────────────────────────────
@@ -259,12 +251,11 @@ def main() -> None:
             print()
 
         # ─── Checkpoint ──────────────────────────────────────
-        code, ckpt_out = run(ssh, "ls -lh /root/boccaccioAI/checkpoints/pretrain/*.ckpt 2>/dev/null")
+        code, ckpt_out = run(ssh, f"ls -lh {PROJECT_DIR}/checkpoints/pretrain/*.ckpt 2>/dev/null")
         if ckpt_out:
             print("  Checkpoint salvati:")
             for line in ckpt_out.split("\n"):
                 if line.strip():
-                    # Estrai nome file e dimensione
                     parts = line.split()
                     if len(parts) >= 5:
                         name = os.path.basename(parts[-1])
@@ -275,14 +266,10 @@ def main() -> None:
             print("  Checkpoint: nessuno ancora salvato")
             print()
 
-        # ─── Schermo tmux (ultime righe) ─────────────────────
+        # ─── Schermo tmux ────────────────────────────────────
         if tmux_running and tmux_text:
             lines = [l for l in tmux_text.split("\n") if l.strip()]
-            useful = []
-            for line in lines:
-                if "httpx" in line or "HTTP Request" in line:
-                    continue
-                useful.append(line)
+            useful = [l for l in lines if "httpx" not in l and "HTTP Request" not in l]
 
             print(f"  Schermo tmux (ultime {min(15, len(useful))} righe):")
             print("  " + "-" * 56)
@@ -293,24 +280,20 @@ def main() -> None:
                 print(f"  {clean}")
             print()
 
-        # ─── Tempo trascorso ─────────────────────────────────
+        # ─── Tempo e costo ───────────────────────────────────
         code, uptime = run(ssh, "ps -o etimes= -p $(pgrep -f 'src.training.train' | head -1) 2>/dev/null")
-        if uptime and uptime.isdigit():
-            elapsed = int(uptime)
+        if uptime and uptime.strip().isdigit():
+            elapsed = int(uptime.strip())
             print(f"  Tempo trascorso: {format_elapsed(elapsed)}")
             if step and total_steps and step > 0 and elapsed > 0:
                 steps_per_sec = step / elapsed
-                remaining_steps = total_steps - step
-                if remaining_steps > 0 and steps_per_sec > 0:
-                    eta = int(remaining_steps / steps_per_sec)
-                    print(f"  Tempo stimato rimanente: {format_elapsed(eta)}")
-            print()
-
-        # ─── Costo stimato ───────────────────────────────────
-        if uptime and uptime.isdigit():
-            elapsed_h = int(uptime) / 3600
-            cost = elapsed_h * 3.5  # H100 = 3.5 credits/h
-            print(f"  Crediti consumati: ~{cost:.1f} ({elapsed_h:.1f}h x 3.5)")
+                remaining = total_steps - step
+                if remaining > 0 and steps_per_sec > 0:
+                    eta = int(remaining / steps_per_sec)
+                    print(f"  Tempo rimanente: {format_elapsed(eta)}")
+            elapsed_h = elapsed / 3600
+            cost = elapsed_h * H100_CREDITS_PER_HOUR
+            print(f"  Crediti consumati: ~{cost:.1f} ({elapsed_h:.1f}h x {H100_CREDITS_PER_HOUR})")
             print()
 
         print("=" * 60)
@@ -319,7 +302,6 @@ def main() -> None:
     if args.watch:
         try:
             while True:
-                # Pulisci schermo
                 os.system("cls" if os.name == "nt" else "clear")
                 try:
                     ssh = connect()
