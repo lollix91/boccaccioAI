@@ -186,9 +186,9 @@ def create_upload_daemon(ssh: paramiko.SSHClient) -> bool:
 
     daemon_script = f"""#!/bin/bash
 # Auto-upload checkpoint daemon per Vast.ai
-# Monitora last.ckpt, e quando cambia (mtime), lo carica su HF Hub.
-# Usa una copia temporanea per evitare conflitti con Lightning che sovrascrive.
-# Pulisce i backup -v*.ckpt creati da Lightning per risparmiare spazio.
+# Monitora il checkpoint nominato piu' recente (epoch=0-step=N.ckpt),
+# escludendo i backup -v*.ckpt. Usa una copia temporanea per l'upload.
+# Pulisce i backup -v*.ckpt per risparmiare spazio.
 
 set -e
 
@@ -200,16 +200,22 @@ UPLOAD_INTERVAL=300  # controlla ogni 5 min
 LAST_MTIME=0
 
 echo "[daemon] Avvio auto-upload checkpoint daemon..."
-echo "[daemon] Monitor: $CKPT_DIR/last.ckpt"
+echo "[daemon] Monitor: $CKPT_DIR/epoch=0-step=*.ckpt"
 echo "[daemon] Repo HF: $HF_REPO"
 
 while true; do
     # Pulisci backup di Lightning (-v*.ckpt) per risparmiare spazio
     rm -f $CKPT_DIR/last-v*.ckpt $CKPT_DIR/epoch=0-step=*-v*.ckpt 2>/dev/null
 
-    LATEST_CKPT="$CKPT_DIR/last.ckpt"
+    # Trova il checkpoint nominato piu' recente, escludendo backup -v*
+    LATEST_CKPT=$(find $CKPT_DIR -maxdepth 1 -name 'epoch=0-step=*.ckpt' ! -name '*-v*.ckpt' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2)
 
-    if [ ! -f "$LATEST_CKPT" ]; then
+    # Fallback a last.ckpt se nessun checkpoint nominato
+    if [ -z "$LATEST_CKPT" ] && [ -f "$CKPT_DIR/last.ckpt" ]; then
+        LATEST_CKPT="$CKPT_DIR/last.ckpt"
+    fi
+
+    if [ -z "$LATEST_CKPT" ]; then
         sleep $UPLOAD_INTERVAL
         continue
     fi
@@ -217,9 +223,9 @@ while true; do
     CURRENT_MTIME=$(stat -c '%Y' "$LATEST_CKPT" 2>/dev/null || echo 0)
 
     if [ "$CURRENT_MTIME" != "$LAST_MTIME" ] && [ "$CURRENT_MTIME" != "0" ]; then
-        echo "[daemon] Checkpoint modificato (mtime=$CURRENT_MTIME), copia temporanea..."
+        echo "[daemon] Checkpoint modificato: $(basename $LATEST_CKPT) (mtime=$CURRENT_MTIME)"
 
-        # Copia last.ckpt in un file temporaneo per non bloccare Lightning
+        # Copia in temporanea per non bloccare Lightning
         TMP_CKPT="/tmp/last_upload_$(date +%s).ckpt"
         cp "$LATEST_CKPT" "$TMP_CKPT" 2>/dev/null
 
@@ -262,7 +268,7 @@ print('[daemon] Upload last.ckpt completato')
 
             if [ $? -eq 0 ]; then
                 LAST_MTIME=$CURRENT_MTIME
-                echo "[daemon] Checkpoint sincronizzato su HF Hub."
+                echo "[daemon] Checkpoint sincronizzato su HF Hub: $(basename $LATEST_CKPT)"
             else
                 echo "[daemon] ERRORE upload last.ckpt, riprovo al prossimo ciclo."
             fi
