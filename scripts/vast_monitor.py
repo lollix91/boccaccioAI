@@ -211,13 +211,17 @@ def main() -> None:
                 # fatti in questa sessione (step corrente - step di partenza).
                 # Lo step di partenza lo ricaviamo dal primo step loggato.
                 first_step = metrics.get("train/loss", {}).get("first_step", step)
-                steps_done = step - first_step if step > first_step else step
-                if steps_done > 0 and elapsed > 0:
+                steps_done = step - first_step if step > first_step else 0
+                # Se abbiamo abbastanza step loggati, usa la velocita' reale
+                # Altrimenti usa una stima conservativa (8 sec/step su H100 SXM)
+                if steps_done > 10 and elapsed > 0:
                     steps_per_sec = steps_done / elapsed
-                    remaining = TOTAL_STEPS - step
-                    if remaining > 0 and steps_per_sec > 0:
-                        eta = int(remaining / steps_per_sec)
-                        print(f"  Tempo rimanente: {format_elapsed(eta)}")
+                else:
+                    steps_per_sec = 1.0 / 8.0  # ~8 sec/step stima H100 SXM
+                remaining = TOTAL_STEPS - step
+                if remaining > 0 and steps_per_sec > 0:
+                    eta = int(remaining / steps_per_sec)
+                    print(f"  Tempo rimanente: {format_elapsed(eta)} (stimato)")
                 elapsed_h = elapsed / 3600
                 cost = elapsed_h * H100_COST_PER_HOUR
                 print(f"  Costo: ~${cost:.2f} ({elapsed_h:.1f}h x ${H100_COST_PER_HOUR}/hr)")
