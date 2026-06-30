@@ -214,7 +214,7 @@ while true; do
         echo "[daemon] Checkpoint modificato (mtime=$CURRENT_MTIME), upload su HF Hub..."
 
         # Upload come last_new.ckpt prima (fail-safe)
-        python -c "
+        python3 -c "
 from huggingface_hub import HfApi
 import os
 api = HfApi(token='$HF_TOKEN')
@@ -232,7 +232,7 @@ print('[daemon] Upload last_new.ckpt completato')
             echo "[daemon] Upload OK, rinomino last_new -> last su HF..."
             # Crea un file temporaneo con il contenuto di last_new e lo carica come last
             # (HF Hub non supporta rename atomico, ma upload_file sovrascrive)
-            python -c "
+            python3 -c "
 from huggingface_hub import HfApi
 api = HfApi(token='$HF_TOKEN')
 # Scarica last_new.ckpt e ricarica come last.ckpt (per sicurezza)
