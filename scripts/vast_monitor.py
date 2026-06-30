@@ -207,8 +207,13 @@ def main() -> None:
             if uptime_str:
                 elapsed = int(uptime_str)
                 print(f"  Tempo trascorso: {format_elapsed(elapsed)}")
-                if step > 0 and elapsed > 0:
-                    steps_per_sec = step / elapsed
+                # Per il resume, calcoliamo la velocita' sugli step effettivamente
+                # fatti in questa sessione (step corrente - step di partenza).
+                # Lo step di partenza lo ricaviamo dal primo step loggato.
+                first_step = metrics.get("train/loss", {}).get("first_step", step)
+                steps_done = step - first_step if step > first_step else step
+                if steps_done > 0 and elapsed > 0:
+                    steps_per_sec = steps_done / elapsed
                     remaining = TOTAL_STEPS - step
                     if remaining > 0 and steps_per_sec > 0:
                         eta = int(remaining / steps_per_sec)
