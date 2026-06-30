@@ -98,7 +98,7 @@ def read_tensorboard_metrics(ssh: paramiko.SSHClient) -> dict:
     script = TB_SCRIPT.format(project=PROJECT_DIR)
     run(ssh, "mkdir -p /tmp/_tb_check")
     run(ssh, f"cat > /tmp/_tb_check/check.py << 'PYEOF'\n{script}\nPYEOF")
-    code, out = run(ssh, "python /tmp/_tb_check/check.py 2>&1")
+    code, out = run(ssh, "python3 /tmp/_tb_check/check.py 2>&1")
     run(ssh, "rm -rf /tmp/_tb_check")
 
     metrics = {}

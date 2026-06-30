@@ -27,8 +27,8 @@ HF_TOKEN = os.environ.get("HF_TOKEN", "")
 HF_REPO = "lollix91/boccaccio-data"
 
 PROJECT_DIR = "/workspace/boccaccioAI"
-PYTHON = "python"  # Vast PyTorch template ha python in PATH
-PIP = "pip"
+PYTHON = "python3"  # Vast.ai template usa python3, non python
+PIP = "pip3"
 
 
 # ─── Helper ───────────────────────────────────────────────────
@@ -74,6 +74,22 @@ def setup_project(ssh: paramiko.SSHClient) -> bool:
         if code != 0:
             print(f"  ERRORE: {out}")
             return False
+
+    print("  Verifico compatibilita' PyTorch + CUDA driver...")
+    # Il template Vast.ai puo' avere PyTorch compilato per CUDA 13.0
+    # ma il driver GPU supporta solo 12.6. In tal caso, reinstalliamo PyTorch.
+    code, out = run(ssh, f"{PYTHON} -c 'import torch; print(torch.__version__)' 2>/dev/null")
+    code, driver_out = run(ssh, "nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null")
+    code, cuda_out = run(ssh, "nvidia-smi | grep 'CUDA Version' | head -1 2>/dev/null")
+    print(f"    PyTorch: {out.strip()}")
+    print(f"    {cuda_out.strip()}")
+
+    # Se PyTorch ha cu130 ma driver e' 12.6, reinstalliamo con cu126
+    if "cu130" in out or "cu128" in out:
+        print("  PyTorch incompatibile con driver CUDA 12.6. Reinstallo con CUDA 12.6...")
+        run(ssh, f"{PIP} install torch==2.9.0 torchvision --index-url https://download.pytorch.org/whl/cu126 --force-reinstall 2>&1 | tail -5", timeout=600)
+        code, out = run(ssh, f"{PYTHON} -c 'import torch; print(torch.__version__)' 2>/dev/null")
+        print(f"    Nuovo PyTorch: {out.strip()}")
 
     print("  Verifico dipendenze...")
     deps = ["lightning", "tokenizers", "tqdm", "pyyaml", "numpy", "xxhash", "huggingface_hub", "flash_attn"]
