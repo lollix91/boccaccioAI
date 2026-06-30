@@ -186,8 +186,9 @@ def create_upload_daemon(ssh: paramiko.SSHClient) -> bool:
 
     daemon_script = f"""#!/bin/bash
 # Auto-upload checkpoint daemon per Vast.ai
-# Monitora il checkpoint piu' recente (last.ckpt o epoch=0-step=*.ckpt),
-# e quando cambia (mtime), lo carica su HF Hub con doppia copia fail-safe.
+# Monitora last.ckpt, e quando cambia (mtime), lo carica su HF Hub.
+# Usa una copia temporanea per evitare conflitti con Lightning che sovrascrive.
+# Pulisce i backup -v*.ckpt creati da Lightning per risparmiare spazio.
 
 set -e
 
@@ -199,14 +200,16 @@ UPLOAD_INTERVAL=300  # controlla ogni 5 min
 LAST_MTIME=0
 
 echo "[daemon] Avvio auto-upload checkpoint daemon..."
-echo "[daemon] Monitor: $CKPT_DIR/*.ckpt"
+echo "[daemon] Monitor: $CKPT_DIR/last.ckpt"
 echo "[daemon] Repo HF: $HF_REPO"
 
 while true; do
-    # Monitora solo last.ckpt (Lightning con save_last=True lo aggiorna)
+    # Pulisci backup di Lightning (-v*.ckpt) per risparmiare spazio
+    rm -f $CKPT_DIR/last-v*.ckpt $CKPT_DIR/epoch=0-step=*-v*.ckpt 2>/dev/null
+
     LATEST_CKPT="$CKPT_DIR/last.ckpt"
 
-    if [ -z "$LATEST_CKPT" ]; then
+    if [ ! -f "$LATEST_CKPT" ]; then
         sleep $UPLOAD_INTERVAL
         continue
     fi
@@ -214,14 +217,26 @@ while true; do
     CURRENT_MTIME=$(stat -c '%Y' "$LATEST_CKPT" 2>/dev/null || echo 0)
 
     if [ "$CURRENT_MTIME" != "$LAST_MTIME" ] && [ "$CURRENT_MTIME" != "0" ]; then
-        echo "[daemon] Checkpoint modificato: $(basename $LATEST_CKPT) (mtime=$CURRENT_MTIME)"
+        echo "[daemon] Checkpoint modificato (mtime=$CURRENT_MTIME), copia temporanea..."
+
+        # Copia last.ckpt in un file temporaneo per non bloccare Lightning
+        TMP_CKPT="/tmp/last_upload_$(date +%s).ckpt"
+        cp "$LATEST_CKPT" "$TMP_CKPT" 2>/dev/null
+
+        if [ ! -f "$TMP_CKPT" ]; then
+            echo "[daemon] ERRORE copia temporanea, riprovo al prossimo ciclo."
+            sleep $UPLOAD_INTERVAL
+            continue
+        fi
+
+        echo "[daemon] Upload su HF Hub..."
 
         # Upload come last_new.ckpt prima (fail-safe)
         python3 -c "
 from huggingface_hub import HfApi
 api = HfApi(token='$HF_TOKEN')
 api.upload_file(
-    path_or_fileobj='$LATEST_CKPT',
+    path_or_fileobj='$TMP_CKPT',
     path_in_repo='checkpoints/pretrain/last_new.ckpt',
     repo_id='$HF_REPO',
     repo_type='dataset',
@@ -236,7 +251,7 @@ print('[daemon] Upload last_new.ckpt completato')
 from huggingface_hub import HfApi
 api = HfApi(token='$HF_TOKEN')
 api.upload_file(
-    path_or_fileobj='$LATEST_CKPT',
+    path_or_fileobj='$TMP_CKPT',
     path_in_repo='checkpoints/pretrain/last.ckpt',
     repo_id='$HF_REPO',
     repo_type='dataset',
@@ -247,13 +262,16 @@ print('[daemon] Upload last.ckpt completato')
 
             if [ $? -eq 0 ]; then
                 LAST_MTIME=$CURRENT_MTIME
-                echo "[daemon] Checkpoint sincronizzato su HF Hub: $(basename $LATEST_CKPT)"
+                echo "[daemon] Checkpoint sincronizzato su HF Hub."
             else
                 echo "[daemon] ERRORE upload last.ckpt, riprovo al prossimo ciclo."
             fi
         else
             echo "[daemon] ERRORE upload last_new.ckpt, riprovo al prossimo ciclo."
         fi
+
+        # Rimuovi copia temporanea
+        rm -f "$TMP_CKPT" 2>/dev/null
     fi
 
     sleep $UPLOAD_INTERVAL
