@@ -186,40 +186,42 @@ def create_upload_daemon(ssh: paramiko.SSHClient) -> bool:
 
     daemon_script = f"""#!/bin/bash
 # Auto-upload checkpoint daemon per Vast.ai
-# Monitora last.ckpt, e quando cambia (mtime), lo carica su HF Hub
-# con doppia copia fail-safe: last_new.ckpt -> last.ckpt (rinomina atomica)
+# Monitora il checkpoint piu' recente (last.ckpt o epoch=0-step=*.ckpt),
+# e quando cambia (mtime), lo carica su HF Hub con doppia copia fail-safe.
 
 set -e
 
 PROJECT_DIR="{PROJECT_DIR}"
-CKPT_PATH="$PROJECT_DIR/checkpoints/pretrain/last.ckpt"
+CKPT_DIR="$PROJECT_DIR/checkpoints/pretrain"
 HF_TOKEN="{HF_TOKEN}"
 HF_REPO="{HF_REPO}"
 UPLOAD_INTERVAL=300  # controlla ogni 5 min
 LAST_MTIME=0
 
 echo "[daemon] Avvio auto-upload checkpoint daemon..."
-echo "[daemon] Monitor: $CKPT_PATH"
+echo "[daemon] Monitor: $CKPT_DIR/*.ckpt"
 echo "[daemon] Repo HF: $HF_REPO"
 
 while true; do
-    if [ ! -f "$CKPT_PATH" ]; then
+    # Monitora solo last.ckpt (Lightning con save_last=True lo aggiorna)
+    LATEST_CKPT="$CKPT_DIR/last.ckpt"
+
+    if [ -z "$LATEST_CKPT" ]; then
         sleep $UPLOAD_INTERVAL
         continue
     fi
 
-    CURRENT_MTIME=$(stat -c '%Y' "$CKPT_PATH" 2>/dev/null || echo 0)
+    CURRENT_MTIME=$(stat -c '%Y' "$LATEST_CKPT" 2>/dev/null || echo 0)
 
     if [ "$CURRENT_MTIME" != "$LAST_MTIME" ] && [ "$CURRENT_MTIME" != "0" ]; then
-        echo "[daemon] Checkpoint modificato (mtime=$CURRENT_MTIME), upload su HF Hub..."
+        echo "[daemon] Checkpoint modificato: $(basename $LATEST_CKPT) (mtime=$CURRENT_MTIME)"
 
         # Upload come last_new.ckpt prima (fail-safe)
         python3 -c "
 from huggingface_hub import HfApi
-import os
 api = HfApi(token='$HF_TOKEN')
 api.upload_file(
-    path_or_fileobj='$CKPT_PATH',
+    path_or_fileobj='$LATEST_CKPT',
     path_in_repo='checkpoints/pretrain/last_new.ckpt',
     repo_id='$HF_REPO',
     repo_type='dataset',
@@ -229,27 +231,23 @@ print('[daemon] Upload last_new.ckpt completato')
 " 2>&1
 
         if [ $? -eq 0 ]; then
-            echo "[daemon] Upload OK, rinomino last_new -> last su HF..."
-            # Crea un file temporaneo con il contenuto di last_new e lo carica come last
-            # (HF Hub non supporta rename atomico, ma upload_file sovrascrive)
+            echo "[daemon] Upload OK, aggiorno last.ckpt su HF..."
             python3 -c "
 from huggingface_hub import HfApi
 api = HfApi(token='$HF_TOKEN')
-# Scarica last_new.ckpt e ricarica come last.ckpt (per sicurezza)
-# In realta' basta ricaricare il file locale come last.ckpt
 api.upload_file(
-    path_or_fileobj='$CKPT_PATH',
+    path_or_fileobj='$LATEST_CKPT',
     path_in_repo='checkpoints/pretrain/last.ckpt',
     repo_id='$HF_REPO',
     repo_type='dataset',
     token='$HF_TOKEN',
 )
-print('[daemon] Upload last.ckpt completato (sovrascritto)')
+print('[daemon] Upload last.ckpt completato')
 " 2>&1
 
             if [ $? -eq 0 ]; then
                 LAST_MTIME=$CURRENT_MTIME
-                echo "[daemon] Checkpoint sincronizzato su HF Hub."
+                echo "[daemon] Checkpoint sincronizzato su HF Hub: $(basename $LATEST_CKPT)"
             else
                 echo "[daemon] ERRORE upload last.ckpt, riprovo al prossimo ciclo."
             fi
