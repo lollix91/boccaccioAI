@@ -107,11 +107,22 @@ class BoccaccioLightningModule(L.LightningModule):
             ),
         )
 
-        total_steps = self.training_config["num_tokens"] // (
+        # Calculate total steps for cosine schedule.
+        # Pre-training uses num_tokens for 1 epoch.
+        # Fine-tuning uses num_tokens * num_epochs.
+        batch_tokens = (
             self.training_config["micro_batch_size"]
             * self.training_config["gradient_accumulation_steps"]
             * self.training_config["sequence_length"]
         )
+
+        num_tokens = self.training_config.get("num_tokens", 0)
+        num_epochs = self.training_config.get("num_epochs", 1)
+
+        if num_tokens > 0:
+            total_steps = (num_tokens * num_epochs) // batch_tokens
+        else:
+            total_steps = 5000  # fallback
 
         scheduler = get_cosine_schedule_with_warmup(
             optimizer,

@@ -57,9 +57,9 @@ finetune:
   sequence_length: 2048
 
   # Batch size (smaller for fine-tuning)
-  micro_batch_size: 4
-  gradient_accumulation_steps: 8
-  # Effective batch: 4 * 8 * 2048 = 65,536 tokens/step
+  micro_batch_size: 8
+  gradient_accumulation_steps: 4
+  # Effective batch: 8 * 4 * 2048 = 65,536 tokens/step
 
   # Optimizer (lower LR for fine-tuning)
   optimizer: "adamw"
@@ -74,6 +74,7 @@ finetune:
   scheduler: "cosine"
   warmup_steps: 50
   num_epochs: 3
+  num_tokens: 102_000_000  # 102M tokens, used for cosine schedule calculation
 
   # LoRA config (optional, set use_lora: true to enable)
   use_lora: false               # Full fine-tuning by default (700M is small enough)
@@ -91,7 +92,7 @@ finetune:
   use_flash_attention: true
 
   # Checkpointing
-  checkpoint_every_n_steps: 500
+  checkpoint_every_n_steps: 1500
   checkpoint_dir: "checkpoints/finetune"
   save_top_k: 2
 
