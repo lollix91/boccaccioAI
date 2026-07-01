@@ -130,24 +130,41 @@ def _build_dataloaders(
             len(val_dataset),
         )
     else:
-        train_file = str(Path(data_path) / "train.jsonl")
-        val_file = Path(data_path) / "val.jsonl"
+        # Fine-tuning: usa formato binario pre-tokenizzato (come pretrain)
+        train_file = str(Path(data_path) / "train.bin")
+        val_file = str(Path(data_path) / "val.bin")
 
-        train_dataset = InstructionDataset(train_file, tokenizer_path, sequence_length)
-
-        if val_file.exists():
-            val_dataset = InstructionDataset(str(val_file), tokenizer_path, sequence_length)
+        if Path(train_file).exists():
+            train_dataset = PreTokenizedDataset(train_file, sequence_length)
+            if Path(val_file).exists():
+                val_dataset = PreTokenizedDataset(val_file, sequence_length)
+            else:
+                val_dataset = None
             log.info(
-                "Fine-tuning datasets -- train: %d examples, val: %d examples",
+                "Fine-tuning datasets (binary) -- train: %d sequences, val: %s sequences",
                 len(train_dataset),
-                len(val_dataset),
+                len(val_dataset) if val_dataset else "no",
             )
         else:
-            val_dataset = None
-            log.info(
-                "Fine-tuning dataset -- train: %d examples (no validation set)",
-                len(train_dataset),
-            )
+            # Fallback: formato JSONL legacy
+            train_file = str(Path(data_path) / "train.jsonl")
+            val_file = Path(data_path) / "val.jsonl"
+
+            train_dataset = InstructionDataset(train_file, tokenizer_path, sequence_length)
+
+            if val_file.exists():
+                val_dataset = InstructionDataset(str(val_file), tokenizer_path, sequence_length)
+                log.info(
+                    "Fine-tuning datasets (JSONL) -- train: %d examples, val: %d examples",
+                    len(train_dataset),
+                    len(val_dataset),
+                )
+            else:
+                val_dataset = None
+                log.info(
+                    "Fine-tuning dataset (JSONL) -- train: %d examples (no validation set)",
+                    len(train_dataset),
+                )
 
     train_loader = DataLoader(
         train_dataset,
