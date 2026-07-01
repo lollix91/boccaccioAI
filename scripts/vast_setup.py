@@ -185,10 +185,12 @@ def create_upload_daemon(ssh: paramiko.SSHClient) -> bool:
     print("=== Step 4: Creazione daemon auto-upload checkpoint ===")
 
     daemon_script = f"""#!/bin/bash
-# Auto-upload checkpoint daemon per Vast.ai
-# Monitora il checkpoint nominato piu' recente (epoch=0-step=N.ckpt),
-# escludendo i backup -v*.ckpt. Usa una copia temporanea per l'upload.
-# Pulisce i backup -v*.ckpt per risparmiare spazio.
+# Auto-upload checkpoint daemon per Vast.ai (v2 - no version bloat)
+# - Carica ogni checkpoint nominato (epoch=0-step=N.ckpt) UNA sola volta
+#   con il suo nome originale (non sovrascrive last.ckpt ad ogni ciclo)
+# - Quando il training termina, carica last.ckpt (finale) una sola volta
+# - Mantiene un registro locale dei checkpoint gia' caricati
+# - Pulisce i backup -v*.ckpt per risparmiare spazio
 
 set -e
 
@@ -197,87 +199,105 @@ CKPT_DIR="$PROJECT_DIR/checkpoints/pretrain"
 HF_TOKEN="{HF_TOKEN}"
 HF_REPO="{HF_REPO}"
 UPLOAD_INTERVAL=300  # controlla ogni 5 min
-LAST_MTIME=0
+UPLOADED_LOG="$CKPT_DIR/.uploaded_registry"
+LAST_UPLOADED=""
 
-echo "[daemon] Avvio auto-upload checkpoint daemon..."
+# Carica registro checkpoint gia' caricati
+mkdir -p "$CKPT_DIR"
+touch "$UPLOADED_LOG"
+
+echo "[daemon] Avvio auto-upload checkpoint daemon v2..."
 echo "[daemon] Monitor: $CKPT_DIR/epoch=0-step=*.ckpt"
 echo "[daemon] Repo HF: $HF_REPO"
+echo "[daemon] Registro: $UPLOADED_LOG"
+
+upload_ckpt() {{
+    # $1 = path locale, $2 = path in repo
+    LOCAL="$1"
+    REPO_PATH="$2"
+    TMP_CKPT="/tmp/ckpt_upload_$(date +%s).ckpt"
+    cp "$LOCAL" "$TMP_CKPT" 2>/dev/null
+    if [ ! -f "$TMP_CKPT" ]; then
+        echo "[daemon] ERRORE copia temporanea di $(basename $LOCAL), riprovo."
+        return 1
+    fi
+    echo "[daemon] Upload $REPO_PATH ($(du -h "$TMP_CKPT" | cut -f1))..."
+    python3 -c "
+from huggingface_hub import HfApi
+api = HfApi(token='$HF_TOKEN')
+api.upload_file(
+    path_or_fileobj='$TMP_CKPT',
+    path_in_repo='$REPO_PATH',
+    repo_id='$HF_REPO',
+    repo_type='dataset',
+    token='$HF_TOKEN',
+)
+print('[daemon] Upload completato: $REPO_PATH')
+" 2>&1
+    RESULT=$?
+    rm -f "$TMP_CKPT" 2>/dev/null
+    return $RESULT
+}}
+
+is_uploaded() {{
+    grep -qxF "$1" "$UPLOADED_LOG" 2>/dev/null
+}}
+
+mark_uploaded() {{
+    echo "$1" >> "$UPLOADED_LOG"
+}}
 
 while true; do
     # Pulisci backup di Lightning (-v*.ckpt) per risparmiare spazio
     rm -f $CKPT_DIR/last-v*.ckpt $CKPT_DIR/epoch=0-step=*-v*.ckpt 2>/dev/null
 
-    # Trova il checkpoint nominato piu' recente, escludendo backup -v*
-    LATEST_CKPT=$(find $CKPT_DIR -maxdepth 1 -name 'epoch=0-step=*.ckpt' ! -name '*-v*.ckpt' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2)
-
-    # Fallback a last.ckpt se nessun checkpoint nominato
-    if [ -z "$LATEST_CKPT" ] && [ -f "$CKPT_DIR/last.ckpt" ]; then
-        LATEST_CKPT="$CKPT_DIR/last.ckpt"
-    fi
-
-    if [ -z "$LATEST_CKPT" ]; then
-        sleep $UPLOAD_INTERVAL
-        continue
-    fi
-
-    CURRENT_MTIME=$(stat -c '%Y' "$LATEST_CKPT" 2>/dev/null || echo 0)
-
-    if [ "$CURRENT_MTIME" != "$LAST_MTIME" ] && [ "$CURRENT_MTIME" != "0" ]; then
-        echo "[daemon] Checkpoint modificato: $(basename $LATEST_CKPT) (mtime=$CURRENT_MTIME)"
-
-        # Copia in temporanea per non bloccare Lightning
-        TMP_CKPT="/tmp/last_upload_$(date +%s).ckpt"
-        cp "$LATEST_CKPT" "$TMP_CKPT" 2>/dev/null
-
-        if [ ! -f "$TMP_CKPT" ]; then
-            echo "[daemon] ERRORE copia temporanea, riprovo al prossimo ciclo."
-            sleep $UPLOAD_INTERVAL
+    # 1. Carica ogni checkpoint nominato NON ancora caricato
+    for CKPT in $(find $CKPT_DIR -maxdepth 1 -name 'epoch=0-step=*.ckpt' ! -name '*-v*.ckpt' -printf '%f\\n' 2>/dev/null | sort); do
+        if is_uploaded "$CKPT"; then
             continue
         fi
-
-        echo "[daemon] Upload su HF Hub..."
-
-        # Upload come last_new.ckpt prima (fail-safe)
-        python3 -c "
-from huggingface_hub import HfApi
-api = HfApi(token='$HF_TOKEN')
-api.upload_file(
-    path_or_fileobj='$TMP_CKPT',
-    path_in_repo='checkpoints/pretrain/last_new.ckpt',
-    repo_id='$HF_REPO',
-    repo_type='dataset',
-    token='$HF_TOKEN',
-)
-print('[daemon] Upload last_new.ckpt completato')
-" 2>&1
-
-        if [ $? -eq 0 ]; then
-            echo "[daemon] Upload OK, aggiorno last.ckpt su HF..."
-            python3 -c "
-from huggingface_hub import HfApi
-api = HfApi(token='$HF_TOKEN')
-api.upload_file(
-    path_or_fileobj='$TMP_CKPT',
-    path_in_repo='checkpoints/pretrain/last.ckpt',
-    repo_id='$HF_REPO',
-    repo_type='dataset',
-    token='$HF_TOKEN',
-)
-print('[daemon] Upload last.ckpt completato')
-" 2>&1
-
-            if [ $? -eq 0 ]; then
-                LAST_MTIME=$CURRENT_MTIME
-                echo "[daemon] Checkpoint sincronizzato su HF Hub: $(basename $LATEST_CKPT)"
-            else
-                echo "[daemon] ERRORE upload last.ckpt, riprovo al prossimo ciclo."
-            fi
-        else
-            echo "[daemon] ERRORE upload last_new.ckpt, riprovo al prossimo ciclo."
+        CKPT_PATH="$CKPT_DIR/$CKPT"
+        # Verifica che il file sia completo (non in scrittura)
+        SIZE1=$(stat -c '%s' "$CKPT_PATH" 2>/dev/null || echo 0)
+        sleep 2
+        SIZE2=$(stat -c '%s' "$CKPT_PATH" 2>/dev/null || echo 0)
+        if [ "$SIZE1" != "$SIZE2" ] || [ "$SIZE1" -lt 1000000 ]; then
+            echo "[daemon] $CKPT ancora in scrittura, salto."
+            continue
         fi
+        echo "[daemon] Nuovo checkpoint: $CKPT"
+        if upload_ckpt "$CKPT_PATH" "checkpoints/pretrain/$CKPT"; then
+            mark_uploaded "$CKPT"
+            echo "[daemon] Registrato: $CKPT"
+        else
+            echo "[daemon] ERRORE upload $CKPT, riprovo al prossimo ciclo."
+        fi
+    done
 
-        # Rimuovi copia temporanea
-        rm -f "$TMP_CKPT" 2>/dev/null
+    # 2. Controlla se il training e' terminato (processo non attivo)
+    TRAINING_RUNNING=$(pgrep -f 'src.training.train' | head -1)
+    if [ -z "$TRAINING_RUNNING" ]; then
+        echo "[daemon] Training non piu' attivo. Upload finale last.ckpt..."
+        if [ -f "$CKPT_DIR/last.ckpt" ]; then
+            if ! is_uploaded "last.ckpt"; then
+                if upload_ckpt "$CKPT_DIR/last.ckpt" "checkpoints/pretrain/last.ckpt"; then
+                    mark_uploaded "last.ckpt"
+                    echo "[daemon] Upload finale completato. last.ckpt su HF Hub."
+                else
+                    echo "[daemon] ERRORE upload finale last.ckpt, riprovo."
+                fi
+            fi
+        fi
+        # Carica anche l'ultimo checkpoint nominato come last.ckpt se diverso
+        LATEST_NAMED=$(find $CKPT_DIR -maxdepth 1 -name 'epoch=0-step=*.ckpt' ! -name '*-v*.ckpt' -printf '%T@ %p\\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2)
+        if [ -n "$LATEST_NAMED" ] && ! is_uploaded "last.ckpt_final"; then
+            echo "[daemon] Upload $LATEST_NAMED come last.ckpt finale..."
+            if upload_ckpt "$LATEST_NAMED" "checkpoints/pretrain/last.ckpt"; then
+                mark_uploaded "last.ckpt_final"
+                echo "[daemon] Checkpoint finale sincronizzato come last.ckpt."
+            fi
+        fi
+        echo "[daemon] Training terminato. Daemon in attesa (non esce per permettere retry)."
     fi
 
     sleep $UPLOAD_INTERVAL
