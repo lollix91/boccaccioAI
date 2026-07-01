@@ -89,49 +89,37 @@ print(f"  Refusal: {len(refusals)} esempi")
 
 # ─── Tokenize all ─────────────────────────────────────────────
 
-print("\n=== Tokenizzazione ===")
+print("\n=== Preparazione esempi (formattazione) ===")
 
-all_ids = []
-stats = {"instructions": 0, "orca": 0, "refusals": 0, "skipped": 0}
+# Build a unified list of formatted texts, then shuffle for good mixing.
+all_texts = []
 
-# Instruction dataset
-for i, ex in enumerate(instructions):
+for ex in instructions:
     text = format_conversation(ex["conversations"])
-    ids = tokenizer.encode(text).ids
-    if len(ids) > MAX_SEQ_LEN:
-        ids = ids[:MAX_SEQ_LEN]
-    if len(ids) < 10:
-        stats["skipped"] += 1
-        continue
-    all_ids.extend(ids)
-    stats["instructions"] += 1
-    if (i + 1) % 20000 == 0:
-        print(f"  Instructions: {i+1}/{len(instructions)}...")
+    all_texts.append(("instruction", text))
 
-# Orca dataset
-for i, ex in enumerate(orca):
+for ex in orca:
     text = format_orca(
         ex.get("system_prompt_it", ""),
         ex.get("question_it", ""),
         ex.get("response_it", ""),
     )
-    if text is None:
-        stats["skipped"] += 1
-        continue
-    ids = tokenizer.encode(text).ids
-    if len(ids) > MAX_SEQ_LEN:
-        ids = ids[:MAX_SEQ_LEN]
-    if len(ids) < 10:
-        stats["skipped"] += 1
-        continue
-    all_ids.extend(ids)
-    stats["orca"] += 1
-    if (i + 1) % 50000 == 0:
-        print(f"  Orca: {i+1}/{len(orca)}...")
+    if text is not None:
+        all_texts.append(("orca", text))
 
-# Refusal dataset
 for ex in refusals:
     text = format_conversation(ex["conversations"])
+    all_texts.append(("refusal", text))
+
+print(f"  Totale esempi: {len(all_texts)}")
+random.shuffle(all_texts)
+
+print("\n=== Tokenizzazione ===")
+
+all_ids = []
+stats = {"instructions": 0, "orca": 0, "refusals": 0, "skipped": 0}
+
+for i, (source, text) in enumerate(all_texts):
     ids = tokenizer.encode(text).ids
     if len(ids) > MAX_SEQ_LEN:
         ids = ids[:MAX_SEQ_LEN]
@@ -139,14 +127,22 @@ for ex in refusals:
         stats["skipped"] += 1
         continue
     all_ids.extend(ids)
-    stats["refusals"] += 1
+    if source == "instruction":
+        stats["instructions"] += 1
+    elif source == "orca":
+        stats["orca"] += 1
+    elif source == "refusal":
+        stats["refusals"] += 1
+    if (i + 1) % 50000 == 0:
+        print(f"  Processati {i+1}/{len(all_texts)}...")
 
 print(f"\n  Statistiche: {stats}")
 print(f"  Totale token: {len(all_ids):,}")
 
 # ─── Split train/val ──────────────────────────────────────────
-
-random.shuffle(all_ids)
+# NOTE: Do NOT shuffle all_ids - that would destroy the linguistic structure.
+# The tokens must remain in their original order (contiguous sequences).
+# Shuffling of sequences happens at the DataLoader level during training.
 
 val_size = int(len(all_ids) * VAL_SPLIT)
 val_size = (val_size // MAX_SEQ_LEN) * MAX_SEQ_LEN
