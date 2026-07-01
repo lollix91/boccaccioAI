@@ -292,12 +292,19 @@ def main() -> None:
         ckpt = torch.load(args.resume_from, map_location="cpu", weights_only=False)
         state_dict = ckpt.get("state_dict", ckpt)
 
-        # Remap torch.compile prefix: model._orig_mod.X -> model.X
+        # Remap torch.compile prefix: model._orig_mod.X -> model.model.X
+        # The checkpoint was saved with torch.compile which wraps the model
+        # as model._orig_mod.<inner>. The LightningModule has structure:
+        #   self.model = BoccaccioForCausalLM  (model.<X>)
+        #   BoccaccioForCausalLM.model = Transformer  (model.model.<X>)
+        # So checkpoint key "model._orig_mod.model.embed_tokens" must become
+        # "model.model.embed_tokens".
         cleaned = {}
         for key, value in state_dict.items():
             new_key = key
             if new_key.startswith("model._orig_mod."):
-                new_key = new_key[len("model._orig_mod."):]
+                # Strip "model._orig_mod." and prepend "model."
+                new_key = "model." + new_key[len("model._orig_mod."):]
             elif new_key.startswith("_orig_mod."):
                 new_key = new_key[len("_orig_mod."):]
             cleaned[new_key] = value
