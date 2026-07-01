@@ -18,6 +18,7 @@ Caratteristiche principali:
 - Rotary Position Embeddings (RoPE) per la codifica posizionale relativa.
 - Compatibilita' con Flash Attention 2 per l'accelerazione delle operazioni di attenzione.
 - Architettura scalata secondo le Chinchilla Scaling Laws (ratio token/parametri ~14:1).
+- Fine-tuning con instruction following + refusal training (honesty) su 270k esempi italiani.
 
 ---
 
@@ -60,12 +61,23 @@ boccaccioAI/
 |   |-- lightning_monitor.py    # Monitoraggio training su Lightning.ai
 |   |-- lightning_download.py   # Download checkpoint da Lightning.ai
 |   |-- test_inference.py       # Test inferenza in locale con checkpoint Lightning
+|   |-- vast_setup.py           # Setup Vast.ai + avvio pre-training (H100)
+|   |-- vast_finetune.py        # Setup Vast.ai + avvio fine-tuning (H100)
+|   |-- vast_monitor.py         # Monitoraggio training su Vast.ai
+|   |-- auto_upload_ckpt.sh     # Daemon auto-upload checkpoint pretrain su HF Hub
+|   |-- auto_upload_finetune.sh # Daemon auto-upload checkpoint finetune su HF Hub (generato da vast_finetune.py)
+|   |-- check_hf.py             # Verifica file e spazio su HF Hub
+|   |-- cleanup_hf.py           # Pulizia checkpoint intermedi su HF Hub
+|   |-- upload_finetune.py      # Upload dataset finetune su HF Hub
+|   |-- read_tb.py              # Lettura metriche TensorBoard da remoto
 |-- src/
 |   |-- data/
 |   |   |-- download.py         # Download CulturaX italiano
 |   |   |-- filter.py           # Filtraggio e deduplicazione documenti
 |   |   |-- tokenize_corpus.py  # Pre-tokenizzazione in formato binario
 |   |   |-- dataset.py          # Dataset PyTorch per il training
+|   |   |-- prepare_finetune.py # Preparazione dataset fine-tuning (unione + tokenizzazione)
+|   |   |-- generate_refusals.py # Generazione esempi refusal training (honesty)
 |   |-- inference/
 |   |   |-- generate.py         # Generazione testo e Q&A
 |   |-- model/
@@ -175,20 +187,41 @@ Instruction fine-tuning sul modello pre-addestrato per migliorare le capacita' d
 
 **Prerequisiti**:
 - Checkpoint pre-training completato (`checkpoints/pretrain/last.ckpt`)
-- Dataset instruction italiano (es. OASST1, UltraChat tradotto, o dataset custom)
+- Dataset instruction tokenizzato (`data/tokenized/finetune/train.bin`, `val.bin`)
 
-**Dataset**: un dataset italiano di istruzioni/domande-risposte. Opzioni:
-- `OASST1` (OpenAssistant) - conversazioni in italiano gia' disponibili
-- `UltraChat` tradotto in italiano
-- Dataset custom con formato `instruction`/`input`/`output`
+**Dataset**: il dataset di fine-tuning e' composto da 3 fonti unite e tokenizzate in formato binario:
 
-**Training**: ~1-2h su H100 (dataset piccolo, modello 700M, LR basso 2e-5, 3 epoch). Usa `--mode finetune --resume-from checkpoints/pretrain/last.ckpt`.
+| Fonte | Esempi | Tipo | Descrizione |
+|-------|--------|------|-------------|
+| `anakin87/fine-instructions-ita-70k` | 69.890 | Instruction generali | Traduzione LLM-aided con quality filtering (giudice LLM) |
+| `raicrits/Orca_ITA_200k` | 199.922 | Instruction + reasoning | Orca-style, system prompt + domande con ragionamento implicito |
+| Refusal examples (generati) | 1.140 | Honesty training | Domande su eventi futuri, persone sconosciute, dati sensibili -> "Non ho informazioni sufficienti" |
+| **Totale** | **270.952** | | **~102M token** |
 
-```bash
-bash scripts/04_finetune.sh
+Il **refusal training** insegna al modello a rispondere onestamente "Non ho informazioni sufficienti per rispondere a questa domanda" quando non conosce la risposta, invece di allucinare. Gli esempi coprono 6 categorie: eventi futuri, persone sconosciute/private, dettagli troppo specifici, domande mediche personali, domande legali specifiche, dati sensibili/privacy.
+
+**Formato chat**: ogni esempio viene formattato come:
+```
+user <domanda> assistant <risposta> <|end|>
 ```
 
-Dopo il fine-tuning, il modello puo' essere usato in modalita' chat/Q&A.
+**Preparazione dataset** (in locale, non su GPU):
+```bash
+python src/data/generate_refusals.py     # Genera 1.140 esempi refusal
+python src/data/prepare_finetune.py      # Scarica, unisce, tokenizza, salva in binario
+python scripts/upload_finetune.py        # Upload su HF Hub
+```
+
+**Training**: ~45 min su H100 (102M token, 3 epoch, LR 2e-5, cosine decay, effective batch 65k token/step). Il training usa `PreTokenizedDataset` (formato binario, come il pre-training) invece di `InstructionDataset` (JSONL) per efficienza.
+
+```bash
+# Setup completo su Vast.ai (download dati + avvio training + daemon upload)
+python scripts/vast_finetune.py --host <ip> --port <porta> --key ~/.ssh/vast_rsa
+```
+
+Il daemon `auto_upload_finetune.sh` monitora la directory `checkpoints/finetune/` e carica automaticamente ogni nuovo checkpoint su HF Hub, mantenendo solo gli ultimi 2 locali.
+
+Dopo il fine-tuning, il modello puo' essere usato in modalita' chat/Q&A e risponde onestamente quando non conosce una risposta.
 
 ### Fase 5 -- Valutazione
 
@@ -289,19 +322,88 @@ Tutti gli iperparametri sono centralizzati in file YAML nella directory `configs
 - **`configs/tokenizer.yaml`** -- Parametri del tokenizer BPE (vocabolario, normalizzazione, corpus sorgente).
 - **`configs/training.yaml`** -- Iperparametri di addestramento separati per pre-training e fine-tuning (learning rate, batch size, scheduler, checkpoint, hardware).
 
+### Configurazione fine-tuning
+
+Il file `configs/training.yaml` sezione `finetune` contiene:
+
+| Parametro | Valore | Descrizione |
+|-----------|--------|-------------|
+| `micro_batch_size` | 8 | Batch per-GPU (H100 80GB) |
+| `gradient_accumulation_steps` | 4 | Accumulazione gradienti |
+| Effective batch | 65.536 token/step | 8 * 4 * 2048 |
+| `learning_rate` | 2e-5 | LR basso per fine-tuning |
+| `min_learning_rate` | 2e-6 | LR finale (cosine decay) |
+| `warmup_steps` | 50 | Warmup breve |
+| `num_epochs` | 3 | Epoch totali |
+| `num_tokens` | 102M | Token dataset (per cosine schedule) |
+| `compile_model` | false | torch.compile disabilitato (overhead non giustificato per training breve) |
+| `use_flash_attention` | true | Flash Attention 2 |
+| `checkpoint_every_n_steps` | 1500 | Salvataggio ogni ~1500 step |
+| `val_check_interval` | 200 | Validation ogni 200 step |
+
+---
+
+## Infrastruttura Vast.ai
+
+Il training avviene su istanze Vast.ai con GPU H100 80GB. Gli script automatizzano il setup completo:
+
+### Pre-training (`scripts/vast_setup.py`)
+1. Verifica GPU (H100/A100/RTX)
+2. Clone/pull del repository
+3. Download dati + checkpoint da HF Hub
+4. Creazione daemon auto-upload checkpoint
+5. Avvio training in tmux + daemon in tmux separato
+
+### Fine-tuning (`scripts/vast_finetune.py`)
+1. Stesso setup del pre-training
+2. Download dataset fine-tuning + checkpoint pretrain da HF
+3. Daemon auto-upload specifico per `checkpoints/finetune/`
+4. Avvio training con `--mode finetune --resume-from checkpoints/pretrain/last.ckpt`
+
+### Monitoraggio (`scripts/vast_monitor.py`)
+- Stato tmux sessions
+- Ultime righe del log di training
+- Utilizzo GPU (nvidia-smi)
+- Lista checkpoint locali
+- Metriche TensorBoard (tramite `scripts/read_tb.py`)
+
+### Daemon auto-upload
+Il daemon monitora la directory dei checkpoint e carica automaticamente ogni nuovo file su HF Hub. Mantiene un registry dei file gia' caricati (`.uploaded_*_registry`) ed elimina i checkpoint locali piu' vecchi per risparmiare spazio su disco. Il token HF viene letto dal file `.hf_token` sul server.
+
 ---
 
 ## Costi Stimati
 
 | Risorsa          | Stima                              |
 |------------------|------------------------------------|
-| Hardware         | 1x NVIDIA H100 80GB (Lightning.ai) |
+| Hardware         | 1x NVIDIA H100 80GB (Vast.ai)     |
 | Tempo pre-training | ~25 ore (12.779 step, 6.7B token) |
-| Costo pre-training | ~87 crediti Lightning (~$30)     |
-| Tempo fine-tuning | ~1-2 ore                          |
-| Costo fine-tuning | ~7 crediti Lightning (~$2.5)      |
+| Costo pre-training | ~$48 (Vast.ai H100 a $1.93/h)    |
+| Tempo fine-tuning | ~45 min (102M token, 3 epoch)     |
+| Costo fine-tuning | ~$1.5                            |
 
 Le stime si riferiscono al pre-training su 6.7 miliardi di token (1 epoch) con le configurazioni di default. Il fine-tuning richiede risorse significativamente inferiori.
+
+---
+
+## Stato di Avanzamento
+
+| Fase | Stato | Dettagli |
+|------|-------|----------|
+| 1. Tokenizer | Completato | BPE 32K su 5GB CulturaX italiano |
+| 2. Pipeline dati | Completato | 30GB CulturaX, filtering + dedup, 6.7B token |
+| 2.5. Smoke test | Completato | Modello nano su RTX 3060 locale |
+| 3. Pre-training | Completato | 12.779 step su H100, train loss 2.55, val loss 3.26 |
+| 4. Fine-tuning | In corso | 270k esempi (70k instruction + 200k Orca + 1.1k refusal), 3 epoch su H100 |
+| 5. Valutazione | Da fare | Test inferenza locale dopo fine-tuning |
+
+**Storage HuggingFace Hub** (`lollix91/boccaccio-data`): ~22 GB totali
+- Checkpoint pre-training `last.ckpt` (8.4 GB)
+- Dati pre-training tokenizzati `train.bin` + `val.bin` (13.3 GB)
+- Dati fine-tuning tokenizzati `train.bin` + `val.bin` (204 MB)
+- Tokenizer, config, meta.json
+
+**Repository GitHub**: `lollix91/boccaccioAI` -- codice sorgente, script, configurazione. I token API sono gestiti tramite variabili d'ambiente (`HF_TOKEN`) e file `.hf_token` sul server remoto.
 
 ---
 
