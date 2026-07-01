@@ -88,7 +88,7 @@ finetune:
 
   # Precision
   precision: "bf16-mixed"
-  compile_model: true
+  compile_model: false           # Disable for fine-tuning (short training, compile overhead not worth it)
   use_flash_attention: true
 
   # Checkpointing
