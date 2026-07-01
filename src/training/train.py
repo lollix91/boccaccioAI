@@ -283,6 +283,32 @@ def main() -> None:
     model = BoccaccioLightningModule(model_config, train_config)
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
+    # ── Load pre-trained weights (for fine-tuning) ───────────────
+    # Lightning's ckpt_path mechanism doesn't handle torch.compile prefix
+    # remapping (model._orig_mod. -> model.), so we load weights manually.
+    ckpt_path = None
+    if args.resume_from:
+        log.info("Loading pre-trained weights from %s", args.resume_from)
+        ckpt = torch.load(args.resume_from, map_location="cpu", weights_only=False)
+        state_dict = ckpt.get("state_dict", ckpt)
+
+        # Remap torch.compile prefix: model._orig_mod.X -> model.X
+        cleaned = {}
+        for key, value in state_dict.items():
+            new_key = key
+            if new_key.startswith("model._orig_mod."):
+                new_key = new_key[len("model._orig_mod."):]
+            elif new_key.startswith("_orig_mod."):
+                new_key = new_key[len("_orig_mod."):]
+            cleaned[new_key] = value
+
+        missing, unexpected = model.load_state_dict(cleaned, strict=False)
+        if missing:
+            log.warning("Missing keys (%d): %s", len(missing), missing[:5])
+        if unexpected:
+            log.warning("Unexpected keys (%d): %s", len(unexpected), unexpected[:5])
+        log.info("Pre-trained weights loaded successfully.")
+
     # ── Callbacks ─────────────────────────────────────────────────
     callbacks = _build_callbacks(train_config, model_config, num_params)
 
@@ -327,8 +353,8 @@ def main() -> None:
     )
 
     # ── Train ─────────────────────────────────────────────────────
-    ckpt_path = args.resume_from if args.resume_from else None
-    trainer.fit(model, train_loader, val_loader, ckpt_path=ckpt_path)
+    # Weights already loaded manually above; no ckpt_path for trainer.fit
+    trainer.fit(model, train_loader, val_loader)
 
     # ── Save final model weights ──────────────────────────────────
     checkpoint_dir = Path(train_config.get("checkpoint_dir", "checkpoints"))
