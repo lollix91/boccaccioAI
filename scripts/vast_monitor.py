@@ -25,7 +25,10 @@ import paramiko
 
 PROJECT_DIR = "/workspace/boccaccioAI"
 H100_COST_PER_HOUR = 1.933  # Vast.ai H100 SXM
-TOTAL_STEPS = 12779
+
+# Step totali per modalita' di training
+TOTAL_STEPS_PRETRAIN = 12779
+TOTAL_STEPS_FINETUNE = 4668  # 49370 seq / (8 micro_batch * 4 grad_accum) * 3 epochs
 
 
 # ─── Helper ───────────────────────────────────────────────────
@@ -65,7 +68,7 @@ except ImportError:
     print("ERROR: tensorboard not installed")
     sys.exit(1)
 
-log_dir = "{project}/logs/pretrain"
+log_dir = "{project}/logs/{mode}"
 versions = sorted(glob.glob(os.path.join(log_dir, "version_*")))
 if not versions:
     print("NO_LOGS")
@@ -93,9 +96,9 @@ for tag, (fstep, fval, lstep, lval) in results.items():
 '''
 
 
-def read_tensorboard_metrics(ssh: paramiko.SSHClient) -> dict:
+def read_tensorboard_metrics(ssh: paramiko.SSHClient, mode: str = "pretrain") -> dict:
     """Legge le metriche da TensorBoard sul server."""
-    script = TB_SCRIPT.format(project=PROJECT_DIR)
+    script = TB_SCRIPT.format(project=PROJECT_DIR, mode=mode)
     run(ssh, "mkdir -p /tmp/_tb_check")
     run(ssh, f"cat > /tmp/_tb_check/check.py << 'PYEOF'\n{script}\nPYEOF")
     code, out = run(ssh, "python3 /tmp/_tb_check/check.py 2>&1")
@@ -124,6 +127,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=22, help="Porta SSH")
     parser.add_argument("--user", type=str, default="root", help="User SSH")
     parser.add_argument("--key", type=str, default=os.path.expanduser("~/.ssh/id_rsa"), help="Chiave SSH privata")
+    parser.add_argument("--mode", type=str, default="pretrain", choices=["pretrain", "finetune"], help="Modalita' di training da monitorare")
     parser.add_argument("--watch", action="store_true", help="Aggiorna ogni N secondi")
     parser.add_argument("--interval", type=int, default=30, help="Intervallo (sec)")
     return parser.parse_args()
@@ -139,8 +143,11 @@ def main() -> None:
         return ssh
 
     def run_once(ssh: paramiko.SSHClient) -> None:
+        mode = args.mode
+        total_steps = TOTAL_STEPS_FINETUNE if mode == "finetune" else TOTAL_STEPS_PRETRAIN
+
         print("=" * 60)
-        print("  BoccaccioAI - Monitoraggio Training Vast.ai")
+        print(f"  BoccaccioAI - Monitoraggio Training Vast.ai [{mode}]")
         print("=" * 60)
         print()
 
@@ -150,13 +157,13 @@ def main() -> None:
         uploader_running = "uploader" in tmux_sessions
 
         # Metriche TensorBoard
-        metrics = read_tensorboard_metrics(ssh)
+        metrics = read_tensorboard_metrics(ssh, mode=mode)
 
         # GPU
         code, gpu_out = run(ssh, "nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader 2>/dev/null")
 
         # Checkpoint locali
-        code, ckpt_out = run(ssh, f"ls -lh {PROJECT_DIR}/checkpoints/pretrain/*.ckpt 2>/dev/null")
+        code, ckpt_out = run(ssh, f"ls -lh {PROJECT_DIR}/checkpoints/{mode}/*.ckpt 2>/dev/null")
 
         # Tempo processo
         code, pid_out = run(ssh, "pgrep -f 'src.training.train' | head -1 2>/dev/null")
@@ -173,9 +180,9 @@ def main() -> None:
 
         if metrics:
             step = metrics.get("train/loss", {}).get("last_step", 0)
-            progress_pct = int(step / TOTAL_STEPS * 100) if TOTAL_STEPS > 0 else 0
+            progress_pct = int(step / total_steps * 100) if total_steps > 0 else 0
 
-            print(f"  Step:       {step} / {TOTAL_STEPS}")
+            print(f"  Step:       {step} / {total_steps}")
             print(f"  Progresso:  {progress_pct}%")
             print()
 
@@ -218,7 +225,7 @@ def main() -> None:
                     steps_per_sec = steps_done / elapsed
                 else:
                     steps_per_sec = 1.0 / 8.0  # ~8 sec/step stima H100 SXM
-                remaining = TOTAL_STEPS - step
+                remaining = total_steps - step
                 if remaining > 0 and steps_per_sec > 0:
                     eta = int(remaining / steps_per_sec)
                     print(f"  Tempo rimanente: {format_elapsed(eta)} (stimato)")
